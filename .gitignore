@@ -1,6 +1,8 @@
 ﻿config.json
+config.cmd
 .setup-complete
 logs/
 build/
 venv/
 __pycache__/
+*.pyc
