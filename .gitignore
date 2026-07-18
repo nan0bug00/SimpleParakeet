@@ -1,0 +1,6 @@
+﻿config.json
+.setup-complete
+logs/
+build/
+venv/
+__pycache__/

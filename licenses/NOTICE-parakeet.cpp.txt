@@ -1,0 +1,10 @@
+parakeet.cpp
+============
+
+parakeet-server.exe is from parakeet.cpp (MIT License).
+Upstream: https://github.com/mudler/parakeet.cpp
+
+Include the upstream LICENSE from that project when redistributing binaries.
+The original NVIDIA Parakeet model weights have their own terms on Hugging Face;
+the GGUF redistributed from mudler/parakeet-cpp-gguf is under CC-BY-4.0 (see
+NOTICE-model-CC-BY-4.0.txt).

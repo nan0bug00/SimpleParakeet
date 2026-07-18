@@ -1,0 +1,18 @@
+Model weights: tdt_ctc-110m-f16.gguf
+=====================================
+
+This bundle includes models/tdt_ctc-110m-f16.gguf.
+
+GGUF conversion / packaging:
+  https://huggingface.co/mudler/parakeet-cpp-gguf
+  File: tdt_ctc-110m-f16.gguf
+  License: Creative Commons Attribution 4.0 International (CC BY 4.0)
+  Full text: licenses/LICENSE-CC-BY-4.0.txt
+  https://creativecommons.org/licenses/by/4.0/
+
+Attribution: credit mudler / the LocalAI team for the GGUF packaging
+(https://huggingface.co/mudler/parakeet-cpp-gguf).
+
+Underlying ASR model: NVIDIA Parakeet (see the original model card, e.g.
+https://huggingface.co/nvidia/parakeet-tdt_ctc-110m) for any additional
+NVIDIA terms that apply to the weights.
