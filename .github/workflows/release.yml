@@ -23,12 +23,12 @@ jobs:
     runs-on: windows-latest
     steps:
       - name: Checkout (with LFS for GGUF)
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           lfs: true
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.12"
 
@@ -108,14 +108,14 @@ jobs:
           Get-FileHash "SimpleParakeet-windows-x64.zip" -Algorithm SHA256 | Format-List
 
       - name: Upload build artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: SimpleParakeet-windows-x64
           path: SimpleParakeet-windows-x64.zip
 
       - name: Create GitHub Release
         if: startsWith(github.ref, 'refs/tags/') || inputs.tag != ''
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ inputs.tag || github.ref_name }}
           name: SimpleParakeet ${{ inputs.tag || github.ref_name }}
