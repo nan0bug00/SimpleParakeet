@@ -1,0 +1,133 @@
+# Build Windows release zip on tag push or manual run.
+# Creates a GitHub Release with SimpleParakeet-windows-x64.zip so users can
+# see the build logs under Actions and download a CI-built artifact.
+
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to create/update (e.g. v1.0.1). Leave empty to only build artifact."
+        required: false
+        default: ""
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout (with LFS for GGUF)
+        uses: actions/checkout@v4
+        with:
+          lfs: true
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build API (PyInstaller onedir)
+        shell: pwsh
+        run: |
+          pwsh -File scripts/build_exe.ps1 -Python "$env:pythonLocation\python.exe"
+
+      - name: Fetch portable ffmpeg
+        shell: pwsh
+        run: pwsh -File scripts/fetch_ffmpeg.ps1
+
+      - name: Fetch parakeet-server (Windows CPU)
+        shell: pwsh
+        run: |
+          $rel = "${{ vars.PARAKEET_CPP_RELEASE }}"
+          if ([string]::IsNullOrWhiteSpace($rel)) { $rel = "v0.4.0" }
+          $api = "https://api.github.com/repos/mudler/parakeet.cpp/releases/tags/$rel"
+          $json = Invoke-RestMethod -Uri $api -Headers @{ "User-Agent" = "SimpleParakeet-CI" }
+          $assets = @($json.assets | ForEach-Object { $_.name })
+          Write-Host "Assets on $rel`:"
+          $assets | ForEach-Object { Write-Host "  $_" }
+          $pick = $json.assets | Where-Object {
+            $_.name -match 'win' -and $_.name -match 'cpu' -and $_.name -match '\.zip$'
+          } | Select-Object -First 1
+          if (-not $pick) {
+            $pick = $json.assets | Where-Object {
+              $_.name -match 'windows' -and $_.name -match '\.zip$'
+            } | Select-Object -First 1
+          }
+          if (-not $pick) { throw "No Windows zip found on mudler/parakeet.cpp $rel — set repo variable PARAKEET_CPP_RELEASE" }
+          Write-Host "Downloading $($pick.name)"
+          $zip = "parakeet-win.zip"
+          Invoke-WebRequest -Uri $pick.browser_download_url -OutFile $zip
+          Expand-Archive -LiteralPath $zip -DestinationPath "_pk" -Force
+          $exe = Get-ChildItem -Path "_pk" -Recurse -Filter "parakeet-server.exe" | Select-Object -First 1
+          if (-not $exe) { throw "parakeet-server.exe not found inside $($pick.name)" }
+          New-Item -ItemType Directory -Force -Path "bin" | Out-Null
+          Copy-Item $exe.FullName "bin\parakeet-server.exe" -Force
+
+      - name: Ensure model present
+        shell: pwsh
+        run: |
+          $m = "models\tdt_ctc-110m-f16.gguf"
+          if (-not (Test-Path -LiteralPath $m)) {
+            Write-Host "GGUF missing from checkout — downloading from Hugging Face"
+            New-Item -ItemType Directory -Force -Path "models" | Out-Null
+            $url = "https://huggingface.co/mudler/parakeet-cpp-gguf/resolve/main/tdt_ctc-110m-f16.gguf"
+            Invoke-WebRequest -Uri $url -OutFile $m
+          }
+          (Get-Item $m).Length
+
+      - name: Stage release folder
+        shell: pwsh
+        run: |
+          $stage = "stage\SimpleParakeet"
+          if (Test-Path "stage") { Remove-Item "stage" -Recurse -Force }
+          $dirs = @(
+            "$stage",
+            "$stage\bin",
+            "$stage\bin\SimpleParakeet",
+            "$stage\models",
+            "$stage\licenses",
+            "$stage\scripts",
+            "$stage\src",
+            "$stage\logs"
+          )
+          foreach ($d in $dirs) { New-Item -ItemType Directory -Force -Path $d | Out-Null }
+          Copy-Item "RUN-ME.bat","launch.ps1","launch.cmd","README.md","config.example.json" $stage -Force
+          Copy-Item "bin\parakeet-server.exe","bin\ffmpeg.exe" "$stage\bin\" -Force
+          Copy-Item "bin\SimpleParakeet\*" "$stage\bin\SimpleParakeet\" -Recurse -Force
+          Copy-Item "models\tdt_ctc-110m-f16.gguf" "$stage\models\" -Force
+          Copy-Item "licenses\*" "$stage\licenses\" -Force
+          Copy-Item "scripts\*" "$stage\scripts\" -Force
+          Copy-Item "src\*" "$stage\src\" -Force
+          Compress-Archive -Path "$stage\*" -DestinationPath "SimpleParakeet-windows-x64.zip" -Force
+          Get-FileHash "SimpleParakeet-windows-x64.zip" -Algorithm SHA256 | Format-List
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: SimpleParakeet-windows-x64
+          path: SimpleParakeet-windows-x64.zip
+
+      - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/') || inputs.tag != ''
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.tag || github.ref_name }}
+          name: SimpleParakeet ${{ inputs.tag || github.ref_name }}
+          generate_release_notes: true
+          files: SimpleParakeet-windows-x64.zip
+          body: |
+            Windows x64 build from GitHub Actions (PyInstaller `--onedir`, no UPX).
+
+            1. Unzip
+            2. Run `RUN-ME.bat`
+            3. Paste the printed endpoint into SkyrimNet External Whisper
+
+            SHA256 of the zip is printed in the Actions log for this run.
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

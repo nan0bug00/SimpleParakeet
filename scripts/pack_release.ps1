@@ -1,5 +1,6 @@
 # Assembles a shareable SimpleParakeet folder (does not zip by default).
-# Expects/copies the GGUF into models\. Does NOT start servers.
+# Expects/copies the GGUF into models\. Builds API as bin\SimpleParakeet\ (onedir).
+# Does NOT start servers.
 
 param(
     [switch]$SkipBuild,
@@ -10,6 +11,7 @@ $ErrorActionPreference = "Stop"
 $Root = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
 $Bin = Join-Path $Root "bin"
 $Scripts = Join-Path $Root "scripts"
+$ApiExe = Join-Path $Bin "SimpleParakeet\SimpleParakeet.exe"
 $LocalPk = Join-Path $Root "..\parakeet\parakeet-server.exe"
 $LocalModel = Join-Path $Root "..\parakeet\tdt_ctc-110m-f16.gguf"
 $DestModel = Join-Path $Root "models\tdt_ctc-110m-f16.gguf"
@@ -26,7 +28,7 @@ if (-not (Test-Path -LiteralPath (Join-Path $Bin "parakeet-server.exe"))) {
 
 if (-not (Test-Path -LiteralPath $DestModel)) {
     if (-not (Test-Path -LiteralPath $LocalModel)) {
-        throw "Need models\tdt_ctc-110m-f16.gguf (copy from your parakeet install)"
+        throw "Need models\tdt_ctc-110m-f16.gguf (copy from your parakeet install or LFS checkout)"
     }
     Copy-Item $LocalModel $DestModel -Force
     Write-Host "Copied GGUF model into models\"
@@ -40,8 +42,8 @@ if (Test-Path -LiteralPath (Join-Path $apiSrc "server.py")) {
     Write-Host "Synced src from parakeet-api"
 }
 
-if (-not $SkipBuild -and -not (Test-Path -LiteralPath (Join-Path $Bin "SimpleParakeet.exe"))) {
-    Write-Host "Building SimpleParakeet.exe (PyInstaller)..."
+if (-not $SkipBuild -and -not (Test-Path -LiteralPath $ApiExe)) {
+    Write-Host "Building SimpleParakeet onedir (PyInstaller)..."
     & (Join-Path $Scripts "build_exe.ps1")
 }
 
@@ -53,5 +55,6 @@ if (-not $SkipFfmpeg -and -not (Test-Path -LiteralPath (Join-Path $Bin "ffmpeg.e
 Write-Host ""
 Write-Host "Bundle staging ready at:" -ForegroundColor Green
 Write-Host "  $Root"
+Write-Host "API exe: $ApiExe"
 Write-Host "Zip that folder (exclude build\, .setup-complete, venv, logs) for release."
 Write-Host "End users double-click RUN-ME.bat"

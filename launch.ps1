@@ -116,7 +116,8 @@ function Resolve-ModelPath($cfg) {
 }
 
 function Assert-BundleFiles {
-    $apiExe = Join-Path $BinDir "SimpleParakeet.exe"
+    $apiExe = Join-Path $BinDir "SimpleParakeet\SimpleParakeet.exe"
+    $apiDir = Join-Path $BinDir "SimpleParakeet"
     $apiPy = Join-Path $Root "src\server.py"
     $pkExe = Join-Path $BinDir "parakeet-server.exe"
     $ffmpeg = Join-Path $BinDir "ffmpeg.exe"
@@ -125,10 +126,11 @@ function Assert-BundleFiles {
         throw "Missing bin\parakeet-server.exe"
     }
     if (-not (Test-Path -LiteralPath $apiExe) -and -not (Test-Path -LiteralPath $apiPy)) {
-        throw "Missing bin\SimpleParakeet.exe"
+        throw "Missing bin\SimpleParakeet\SimpleParakeet.exe"
     }
     return @{
         ApiExe = $apiExe
+        ApiDir = $apiDir
         HasExe = (Test-Path -LiteralPath $apiExe)
         PkExe  = $pkExe
         Ffmpeg = $ffmpeg
@@ -279,13 +281,13 @@ try {
         $null = Start-Hidden `
             -FilePath $files.ApiExe `
             -ArgumentList @("--host", $hostBind, "--port", "$apiPort") `
-            -WorkingDirectory $BinDir `
+            -WorkingDirectory $files.ApiDir `
             -OutLog (Join-Path $LogDir "api.out.log") `
             -ErrLog (Join-Path $LogDir "api.err.log")
     } else {
         $py = Join-Path $Root "..\parakeet-api\venv\Scripts\python.exe"
         if (-not (Test-Path -LiteralPath $py)) {
-            throw "Missing bin\SimpleParakeet.exe (API binary not built yet)."
+            throw "Missing bin\SimpleParakeet\SimpleParakeet.exe (API binary not built yet)."
         }
         $srcDir = Join-Path $Root "src"
         $null = Start-Hidden `

@@ -13,13 +13,16 @@ set "CONFIG_CMD=%ROOT%\config.cmd"
 set "CONFIG_JSON=%ROOT%\config.json"
 set "MODEL=%ROOT%\models\tdt_ctc-110m-f16.gguf"
 
+set "API_EXE=%BIN%\SimpleParakeet\SimpleParakeet.exe"
+set "API_DIR=%BIN%\SimpleParakeet"
+
 if not exist "%BIN%\parakeet-server.exe" (
   echo Missing bin\parakeet-server.exe
   pause
   exit /b 1
 )
-if not exist "%BIN%\SimpleParakeet.exe" (
-  echo Missing bin\SimpleParakeet.exe
+if not exist "%API_EXE%" (
+  echo Missing bin\SimpleParakeet\SimpleParakeet.exe
   pause
   exit /b 1
 )
@@ -118,7 +121,8 @@ echo @echo off> "%LOG%\start-api.bat"
 echo set "PARAKEET_UPSTREAM=%UPSTREAM%">> "%LOG%\start-api.bat"
 echo set "PARAKEET_FFMPEG=%BIN%\ffmpeg.exe">> "%LOG%\start-api.bat"
 echo set "PATH=%BIN%;%%PATH%%">> "%LOG%\start-api.bat"
-echo "%BIN%\SimpleParakeet.exe" --host %HOST% --port %API_PORT% ^> "%LOG%\api.out.log" 2^> "%LOG%\api.err.log">> "%LOG%\start-api.bat"
+echo cd /d "%API_DIR%">> "%LOG%\start-api.bat"
+echo "%API_EXE%" --host %HOST% --port %API_PORT% ^> "%LOG%\api.out.log" 2^> "%LOG%\api.err.log">> "%LOG%\start-api.bat"
 
 start /B "" "%LOG%\start-parakeet.bat"
 start /B "" "%LOG%\start-api.bat"
