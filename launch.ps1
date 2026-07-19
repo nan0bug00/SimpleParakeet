@@ -144,13 +144,26 @@ function Start-Hidden {
         [Parameter(Mandatory = $true)][string]$OutLog,
         [Parameter(Mandatory = $true)][string]$ErrLog
     )
-    $p = Start-Process -FilePath $FilePath `
-        -ArgumentList $ArgumentList `
-        -WorkingDirectory $WorkingDirectory `
-        -WindowStyle Hidden `
-        -PassThru `
-        -RedirectStandardOutput $OutLog `
-        -RedirectStandardError $ErrLog
+    # Start-Process -ArgumentList <array> does NOT quote args with spaces, so
+    # paths like C:\Skyrim MGO\... break (--model gets "C:\Skyrim", rest is junk).
+    # ProcessStartInfo.ArgumentList quotes each arg correctly (.NET).
+    $psi = [System.Diagnostics.ProcessStartInfo]::new()
+    $psi.FileName = $FilePath
+    $psi.WorkingDirectory = $WorkingDirectory
+    $psi.UseShellExecute = $false
+    $psi.CreateNoWindow = $true
+    $psi.WindowStyle = [System.Diagnostics.ProcessWindowStyle]::Hidden
+    # Avoid redirect complexity; append a one-shot note to the log path for debugging.
+    foreach ($a in $ArgumentList) {
+        [void]$psi.ArgumentList.Add([string]$a)
+    }
+
+    try {
+        "Starting: $FilePath $($ArgumentList -join ' ')" | Set-Content -LiteralPath $OutLog -Encoding utf8
+        "" | Set-Content -LiteralPath $ErrLog -Encoding utf8
+    } catch { }
+
+    $p = [System.Diagnostics.Process]::Start($psi)
     if (-not $p) { throw "Failed to start: $FilePath" }
     $script:ChildPids += $p.Id
     return $p

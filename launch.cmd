@@ -109,9 +109,19 @@ set "PARAKEET_UPSTREAM=%UPSTREAM%"
 set "PARAKEET_FFMPEG=%BIN%\ffmpeg.exe"
 set "PATH=%BIN%;%PATH%"
 
-rem /B = no extra windows. cmd /c so redirects apply to the child (Wine-friendlier).
-start /B "" cmd /c "set PARAKEET_DEVICE=%DEVICE%&& "%BIN%\parakeet-server.exe" --model "%MODEL%" --host %HOST% --port %PK_PORT% > "%LOG%\parakeet.out.log" 2> "%LOG%\parakeet.err.log""
-start /B "" cmd /c "set PARAKEET_UPSTREAM=%UPSTREAM%&& set PARAKEET_FFMPEG=%BIN%\ffmpeg.exe&& set PATH=%BIN%;%PATH%&& "%BIN%\SimpleParakeet.exe" --host %HOST% --port %API_PORT% > "%LOG%\api.out.log" 2> "%LOG%\api.err.log""
+rem Write tiny helper bats so paths with spaces (e.g. Skyrim MGO) stay quoted.
+echo @echo off> "%LOG%\start-parakeet.bat"
+echo set "PARAKEET_DEVICE=%DEVICE%">> "%LOG%\start-parakeet.bat"
+echo "%BIN%\parakeet-server.exe" --model "%MODEL%" --host %HOST% --port %PK_PORT% ^> "%LOG%\parakeet.out.log" 2^> "%LOG%\parakeet.err.log">> "%LOG%\start-parakeet.bat"
+
+echo @echo off> "%LOG%\start-api.bat"
+echo set "PARAKEET_UPSTREAM=%UPSTREAM%">> "%LOG%\start-api.bat"
+echo set "PARAKEET_FFMPEG=%BIN%\ffmpeg.exe">> "%LOG%\start-api.bat"
+echo set "PATH=%BIN%;%%PATH%%">> "%LOG%\start-api.bat"
+echo "%BIN%\SimpleParakeet.exe" --host %HOST% --port %API_PORT% ^> "%LOG%\api.out.log" 2^> "%LOG%\api.err.log">> "%LOG%\start-api.bat"
+
+start /B "" "%LOG%\start-parakeet.bat"
+start /B "" "%LOG%\start-api.bat"
 
 echo Waiting for API...
 set /a TRIES=0
