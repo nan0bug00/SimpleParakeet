@@ -109,12 +109,15 @@ jobs:
           Compress-Archive -Path "$stage\*" -DestinationPath "SimpleParakeet-windows-x64.zip" -Force
           Get-FileHash "SimpleParakeet-windows-x64.zip" -Algorithm SHA256 | Format-List
 
-      # archive: false — otherwise Actions wraps the zip in another zip on download
+      # Default artifact zip-wrapping is fine: download-artifact unwraps it and
+      # leaves the real release .zip in path/ (do NOT use archive:false here —
+      # download would unpack the release zip itself and softprops would attach nothing).
       - name: Upload build artifact
         uses: actions/upload-artifact@v7
         with:
+          name: SimpleParakeet-windows-x64
           path: SimpleParakeet-windows-x64.zip
-          archive: false
+          if-no-files-found: error
 
   build-linux:
     runs-on: ubuntu-latest
@@ -187,12 +190,12 @@ jobs:
           (cd stage/SimpleParakeet && zip -r "$GITHUB_WORKSPACE/SimpleParakeet-linux-x64.zip" .)
           sha256sum SimpleParakeet-linux-x64.zip
 
-      # archive: false — otherwise Actions wraps the zip in another zip on download
       - name: Upload build artifact
         uses: actions/upload-artifact@v7
         with:
+          name: SimpleParakeet-linux-x64
           path: SimpleParakeet-linux-x64.zip
-          archive: false
+          if-no-files-found: error
 
   publish:
     needs: [build-windows, build-linux]
@@ -205,15 +208,25 @@ jobs:
       - name: Download Windows artifact
         uses: actions/download-artifact@v8
         with:
-          # archive: false uses the filename as the artifact name
-          name: SimpleParakeet-windows-x64.zip
+          name: SimpleParakeet-windows-x64
           path: dist
 
       - name: Download Linux artifact
         uses: actions/download-artifact@v8
         with:
-          name: SimpleParakeet-linux-x64.zip
+          name: SimpleParakeet-linux-x64
           path: dist
+
+      - name: Verify release zips present
+        run: |
+          set -euo pipefail
+          ls -lah dist/
+          test -f dist/SimpleParakeet-windows-x64.zip
+          test -f dist/SimpleParakeet-linux-x64.zip
+          file dist/SimpleParakeet-windows-x64.zip | grep -qi 'zip'
+          file dist/SimpleParakeet-linux-x64.zip | grep -qi 'zip'
+          test "$(stat -c%s dist/SimpleParakeet-windows-x64.zip)" -gt 1000000
+          test "$(stat -c%s dist/SimpleParakeet-linux-x64.zip)" -gt 1000000
 
       - name: Extract changelog for this release
         env:
@@ -242,6 +255,7 @@ jobs:
           tag_name: ${{ inputs.tag || github.ref_name }}
           name: SimpleParakeet ${{ inputs.tag || github.ref_name }}
           body_path: release-notes.md
+          fail_on_unmatched_files: true
           files: |
             dist/SimpleParakeet-windows-x64.zip
             dist/SimpleParakeet-linux-x64.zip
