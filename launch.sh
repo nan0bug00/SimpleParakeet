@@ -101,6 +101,13 @@ ensure_first_run() {
     return
   fi
 
+  # Without a TTY, `read` gets EOF and would silently accept defaults — refuse.
+  if [[ ! -t 0 ]]; then
+    echo "Setup needs an interactive terminal." >&2
+    echo "Double-click RUN-ME.sh (opens a terminal), or run: ./RUN-ME.sh" >&2
+    exit 1
+  fi
+
   echo
   echo "SimpleParakeet setup"
   echo "Press Enter to keep the value in [brackets]."

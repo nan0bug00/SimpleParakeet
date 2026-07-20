@@ -10,6 +10,7 @@ All notable changes to SimpleParakeet are documented here.
 
 ### Changed
 - `audio.py` resolves bare `bin/ffmpeg` as well as `ffmpeg.exe` (shared Windows/Linux API)
+- **`RUN-ME.sh`** opens a terminal when double-clicked from a file manager (same idea as `RUN-ME.bat` on Windows), instead of running setup invisibly with no prompts
 
 ## [1.1.0] — 2026-07-19
 

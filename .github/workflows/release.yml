@@ -228,19 +228,6 @@ jobs:
             | **Windows x64** | `SimpleParakeet-windows-x64.zip` |
             | **Linux x64 (CPU)** | `SimpleParakeet-linux-x64.tar.gz` |
 
-            ### Windows
-            1. Unzip
-            2. Run `RUN-ME.bat`
-            3. Paste the printed endpoint into SkyrimNet External Whisper
-
-            ### Linux (incl. Proton / SkyrimNet)
-            Run SimpleParakeet on the **host** (not inside the Wine prefix):
-            1. `tar -xzf SimpleParakeet-linux-x64.tar.gz && cd SimpleParakeet`
-            2. `chmod +x RUN-ME.sh && ./RUN-ME.sh`
-            3. Paste `http://127.0.0.1:8210/v1/audio/transcriptions` into SkyrimNet
-
-            Keep listen address on `127.0.0.1` — no firewall changes needed for Proton→localhost.
-
-            SHA256 checksums are printed in the Actions log for this run.
+            See the README in the archive (or on the repo) for setup. The launcher prints the endpoint to use after start.
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
