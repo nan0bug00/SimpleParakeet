@@ -198,6 +198,9 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/') || inputs.tag != ''
     runs-on: ubuntu-latest
     steps:
+      - name: Checkout (for CHANGELOG)
+        uses: actions/checkout@v6
+
       - name: Download Windows artifact
         uses: actions/download-artifact@v8
         with:
@@ -211,23 +214,35 @@ jobs:
           name: SimpleParakeet-linux-x64.tar.gz
           path: dist
 
+      - name: Extract changelog for this release
+        env:
+          TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+          VERSION="${TAG#v}"
+          # Body under "## [X.Y.Z] — …" until the next version heading
+          awk -v ver="$VERSION" '
+            $0 ~ "^## \\[" ver "\\]" { found=1; next }
+            found && /^## \[/ { exit }
+            found { print }
+          ' CHANGELOG.md > release-notes.md
+          # Drop leading blank lines
+          sed -i '/./,$!d' release-notes.md
+          if [ ! -s release-notes.md ]; then
+            echo "No CHANGELOG.md section found for version ${VERSION} (tag ${TAG})" >&2
+            exit 1
+          fi
+          echo "----- release notes -----"
+          cat release-notes.md
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ inputs.tag || github.ref_name }}
           name: SimpleParakeet ${{ inputs.tag || github.ref_name }}
-          generate_release_notes: true
+          body_path: release-notes.md
           files: |
             dist/SimpleParakeet-windows-x64.zip
             dist/SimpleParakeet-linux-x64.tar.gz
-          body: |
-            ## Downloads
-
-            | Platform | File |
-            |----------|------|
-            | **Windows x64** | `SimpleParakeet-windows-x64.zip` |
-            | **Linux x64 (CPU)** | `SimpleParakeet-linux-x64.tar.gz` |
-
-            See the README in the archive (or on the repo) for setup. The launcher prints the endpoint to use after start.
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

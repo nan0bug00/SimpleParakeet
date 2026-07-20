@@ -40,4 +40,3 @@ Initial public release.
 
 [1.2.0]: https://github.com/nan0bug00/SimpleParakeet/releases
 [1.1.0]: https://github.com/nan0bug00/SimpleParakeet/releases/tag/v1.1.0
-[1.0.0]: https://github.com/nan0bug00/SimpleParakeet/releases
