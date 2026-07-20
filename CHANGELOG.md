@@ -7,8 +7,6 @@ All notable changes to SimpleParakeet are documented here.
 ### Added
 - **Linux x64 (CPU)** release tarball via GitHub Actions: `SimpleParakeet-linux-x64.tar.gz`
   - Host-native `RUN-ME.sh` / `launch.sh` (PyInstaller onedir API, mudler `parakeet-server`, BtbN LGPL ffmpeg)
-  - Intended for Proton/SkyrimNet: run on the Linux host at `127.0.0.1` — no Wine prefix install, no firewall for localhost
-- CI publishes **Windows zip + Linux tarball** on the same release tag
 
 ### Changed
 - `audio.py` resolves bare `bin/ffmpeg` as well as `ffmpeg.exe` (shared Windows/Linux API)
