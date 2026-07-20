@@ -106,10 +106,16 @@ def _find_ffmpeg() -> str | None:
     which = shutil.which("ffmpeg")
     if which:
         return which
-    # Frozen / portable bundle: bin\ffmpeg.exe next to the exe or cwd
+    # Frozen / portable bundle: ffmpeg next to the exe or under bin/
+    exe_dir = Path(sys.executable).resolve().parent
     candidates = [
-        Path(sys.executable).resolve().parent / "ffmpeg.exe",
+        exe_dir / "ffmpeg",
+        exe_dir / "ffmpeg.exe",
+        exe_dir.parent / "ffmpeg",
+        exe_dir.parent / "ffmpeg.exe",
+        Path.cwd() / "ffmpeg",
         Path.cwd() / "ffmpeg.exe",
+        Path.cwd() / "bin" / "ffmpeg",
         Path.cwd() / "bin" / "ffmpeg.exe",
     ]
     for c in candidates:
@@ -123,7 +129,7 @@ def _ffmpeg_to_wav16k(data: bytes, filename: str | None) -> bytes:
     if not ffmpeg:
         raise RuntimeError(
             "ffmpeg not found; required to decode non-WAV/non-PCM audio. "
-            "Install ffmpeg on PATH or place ffmpeg.exe in bin/."
+            "Install ffmpeg on PATH or place ffmpeg / ffmpeg.exe in bin/."
         )
     suffix = Path(filename or "audio.bin").suffix or ".bin"
     with tempfile.TemporaryDirectory(prefix="parakeet-api-") as td:

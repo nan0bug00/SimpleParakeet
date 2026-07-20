@@ -1,6 +1,5 @@
-# Build Windows release zip on tag push or manual run.
-# Creates a GitHub Release with SimpleParakeet-windows-x64.zip so users can
-# see the build logs under Actions and download a CI-built artifact.
+# Build Windows + Linux release packages on tag push or manual run.
+# Creates a GitHub Release with both OS artifacts (separate zips/tarballs).
 
 name: Release
 
@@ -11,7 +10,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Release tag to create/update (e.g. v1.0.1). Leave empty to only build artifact."
+        description: "Release tag to create/update (e.g. v1.2.0). Leave empty to only build artifacts."
         required: false
         default: ""
 
@@ -97,12 +96,15 @@ jobs:
             "$stage\logs"
           )
           foreach ($d in $dirs) { New-Item -ItemType Directory -Force -Path $d | Out-Null }
-          Copy-Item "RUN-ME.bat","launch.ps1","launch.cmd","README.md","config.example.json" $stage -Force
+          Copy-Item "RUN-ME.bat","launch.ps1","launch.cmd","README.md","CHANGELOG.md","config.example.json" $stage -Force
           Copy-Item "bin\parakeet-server.exe","bin\ffmpeg.exe" "$stage\bin\" -Force
           Copy-Item "bin\SimpleParakeet\*" "$stage\bin\SimpleParakeet\" -Recurse -Force
           Copy-Item "models\tdt_ctc-110m-f16.gguf" "$stage\models\" -Force
           Copy-Item "licenses\*" "$stage\licenses\" -Force
-          Copy-Item "scripts\*" "$stage\scripts\" -Force
+          # Windows scripts only (exclude .sh)
+          Get-ChildItem "scripts" -File | Where-Object { $_.Extension -ne ".sh" } | ForEach-Object {
+            Copy-Item $_.FullName "$stage\scripts\" -Force
+          }
           Copy-Item "src\*" "$stage\src\" -Force
           Compress-Archive -Path "$stage\*" -DestinationPath "SimpleParakeet-windows-x64.zip" -Force
           Get-FileHash "SimpleParakeet-windows-x64.zip" -Algorithm SHA256 | Format-List
@@ -113,21 +115,129 @@ jobs:
           name: SimpleParakeet-windows-x64
           path: SimpleParakeet-windows-x64.zip
 
+  build-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout (with LFS for GGUF)
+        uses: actions/checkout@v6
+        with:
+          lfs: true
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Build API (PyInstaller onedir)
+        run: |
+          chmod +x scripts/build_api.sh
+          ./scripts/build_api.sh "$pythonLocation/bin/python"
+
+      - name: Fetch portable ffmpeg (BtbN linux64-lgpl)
+        run: |
+          chmod +x scripts/fetch_ffmpeg_linux.sh
+          ./scripts/fetch_ffmpeg_linux.sh
+
+      - name: Fetch parakeet-server (Linux CPU x64)
+        env:
+          PARAKEET_CPP_RELEASE: ${{ vars.PARAKEET_CPP_RELEASE }}
+        run: |
+          chmod +x scripts/fetch_parakeet_linux.sh
+          if [ -z "${PARAKEET_CPP_RELEASE}" ]; then
+            export PARAKEET_CPP_RELEASE=v0.4.0
+          fi
+          ./scripts/fetch_parakeet_linux.sh
+
+      - name: Ensure model present
+        run: |
+          m="models/tdt_ctc-110m-f16.gguf"
+          if [ ! -f "$m" ]; then
+            echo "GGUF missing from checkout — downloading from Hugging Face"
+            mkdir -p models
+            curl -fsSL -o "$m" \
+              "https://huggingface.co/mudler/parakeet-cpp-gguf/resolve/main/tdt_ctc-110m-f16.gguf"
+          fi
+          ls -la "$m"
+
+      - name: Stage release folder
+        run: |
+          stage="stage/SimpleParakeet"
+          rm -rf stage
+          mkdir -p "$stage"/{bin/SimpleParakeet,models,licenses,scripts,src,logs}
+          cp RUN-ME.sh launch.sh README.md CHANGELOG.md config.example.json "$stage/"
+          cp bin/parakeet-server bin/ffmpeg "$stage/bin/"
+          # Sibling .so from mudler bundle, if any
+          shopt -s nullglob
+          for lib in bin/*.so bin/*.so.*; do
+            cp -f "$lib" "$stage/bin/"
+          done
+          shopt -u nullglob
+          cp -a bin/SimpleParakeet/. "$stage/bin/SimpleParakeet/"
+          cp models/tdt_ctc-110m-f16.gguf "$stage/models/"
+          cp licenses/* "$stage/licenses/"
+          # Linux scripts only
+          cp scripts/*.sh "$stage/scripts/" 2>/dev/null || true
+          cp src/* "$stage/src/"
+          chmod +x "$stage/RUN-ME.sh" "$stage/launch.sh" \
+            "$stage/bin/parakeet-server" "$stage/bin/ffmpeg" \
+            "$stage/bin/SimpleParakeet/SimpleParakeet" \
+            "$stage/scripts/"*.sh 2>/dev/null || true
+          tar -C stage -czf SimpleParakeet-linux-x64.tar.gz SimpleParakeet
+          sha256sum SimpleParakeet-linux-x64.tar.gz
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: SimpleParakeet-linux-x64
+          path: SimpleParakeet-linux-x64.tar.gz
+
+  publish:
+    needs: [build-windows, build-linux]
+    if: startsWith(github.ref, 'refs/tags/') || inputs.tag != ''
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download Windows artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: SimpleParakeet-windows-x64
+          path: dist
+
+      - name: Download Linux artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: SimpleParakeet-linux-x64
+          path: dist
+
       - name: Create GitHub Release
-        if: startsWith(github.ref, 'refs/tags/') || inputs.tag != ''
         uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ inputs.tag || github.ref_name }}
           name: SimpleParakeet ${{ inputs.tag || github.ref_name }}
           generate_release_notes: true
-          files: SimpleParakeet-windows-x64.zip
+          files: |
+            dist/SimpleParakeet-windows-x64.zip
+            dist/SimpleParakeet-linux-x64.tar.gz
           body: |
-            Windows x64 build from GitHub Actions (PyInstaller `--onedir`, no UPX).
+            ## Downloads
 
+            | Platform | File |
+            |----------|------|
+            | **Windows x64** | `SimpleParakeet-windows-x64.zip` |
+            | **Linux x64 (CPU)** | `SimpleParakeet-linux-x64.tar.gz` |
+
+            ### Windows
             1. Unzip
             2. Run `RUN-ME.bat`
             3. Paste the printed endpoint into SkyrimNet External Whisper
 
-            SHA256 of the zip is printed in the Actions log for this run.
+            ### Linux (incl. Proton / SkyrimNet)
+            Run SimpleParakeet on the **host** (not inside the Wine prefix):
+            1. `tar -xzf SimpleParakeet-linux-x64.tar.gz && cd SimpleParakeet`
+            2. `chmod +x RUN-ME.sh && ./RUN-ME.sh`
+            3. Paste `http://127.0.0.1:8210/v1/audio/transcriptions` into SkyrimNet
+
+            Keep listen address on `127.0.0.1` — no firewall changes needed for Proton→localhost.
+
+            SHA256 checksums are printed in the Actions log for this run.
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
