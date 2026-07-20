@@ -25,7 +25,7 @@ Change ports later: `pwsh -File launch.ps1 -Setup`
 
 Intended for host-native use with SkyrimNet under Proton/Wine: run SimpleParakeet on Linux, point the game at `127.0.0.1` — **do not** install the Windows zip into your Wine prefix.
 
-1. Unpack: `tar -xzf SimpleParakeet-linux-x64.tar.gz`
+1. Unzip `SimpleParakeet-linux-x64.zip`.
 2. Double-click **`RUN-ME.sh`** (opens a terminal). Or from a terminal: `chmod +x RUN-ME.sh && ./RUN-ME.sh`
 3. On first launch, confirm or change ports (keep **`127.0.0.1`** unless you know you need otherwise).
 4. Paste the printed endpoint into SkyrimNet External Whisper (same model/key as above).

@@ -1,5 +1,5 @@
 # Build Windows + Linux release packages on tag push or manual run.
-# Creates a GitHub Release with both OS artifacts (separate zips/tarballs).
+# Creates a GitHub Release with both OS zip artifacts.
 
 name: Release
 
@@ -183,14 +183,15 @@ jobs:
             "$stage/bin/parakeet-server" "$stage/bin/ffmpeg" \
             "$stage/bin/SimpleParakeet/SimpleParakeet" \
             "$stage/scripts/"*.sh 2>/dev/null || true
-          tar -C stage -czf SimpleParakeet-linux-x64.tar.gz SimpleParakeet
-          sha256sum SimpleParakeet-linux-x64.tar.gz
+          # Same format as Windows: one zip, contents at archive root
+          (cd stage/SimpleParakeet && zip -r "$GITHUB_WORKSPACE/SimpleParakeet-linux-x64.zip" .)
+          sha256sum SimpleParakeet-linux-x64.zip
 
-      # archive: false — otherwise Actions wraps the tarball in a zip on download
+      # archive: false — otherwise Actions wraps the zip in another zip on download
       - name: Upload build artifact
         uses: actions/upload-artifact@v7
         with:
-          path: SimpleParakeet-linux-x64.tar.gz
+          path: SimpleParakeet-linux-x64.zip
           archive: false
 
   publish:
@@ -211,7 +212,7 @@ jobs:
       - name: Download Linux artifact
         uses: actions/download-artifact@v8
         with:
-          name: SimpleParakeet-linux-x64.tar.gz
+          name: SimpleParakeet-linux-x64.zip
           path: dist
 
       - name: Extract changelog for this release
@@ -243,6 +244,6 @@ jobs:
           body_path: release-notes.md
           files: |
             dist/SimpleParakeet-windows-x64.zip
-            dist/SimpleParakeet-linux-x64.tar.gz
+            dist/SimpleParakeet-linux-x64.zip
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

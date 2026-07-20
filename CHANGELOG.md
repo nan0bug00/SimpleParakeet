@@ -5,7 +5,7 @@ All notable changes to SimpleParakeet are documented here.
 ## [1.2.0] — 2026-07-20
 
 ### Added
-- **Linux x64 (CPU)** release tarball via GitHub Actions: `SimpleParakeet-linux-x64.tar.gz`
+- **Linux x64 (CPU)** release zip via GitHub Actions: `SimpleParakeet-linux-x64.zip`
   - Host-native `RUN-ME.sh` / `launch.sh` (PyInstaller onedir API, mudler `parakeet-server`, BtbN LGPL ffmpeg)
 
 ### Changed
