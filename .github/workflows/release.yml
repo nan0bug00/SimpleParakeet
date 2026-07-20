@@ -109,11 +109,12 @@ jobs:
           Compress-Archive -Path "$stage\*" -DestinationPath "SimpleParakeet-windows-x64.zip" -Force
           Get-FileHash "SimpleParakeet-windows-x64.zip" -Algorithm SHA256 | Format-List
 
+      # archive: false — otherwise Actions wraps the zip in another zip on download
       - name: Upload build artifact
         uses: actions/upload-artifact@v7
         with:
-          name: SimpleParakeet-windows-x64
           path: SimpleParakeet-windows-x64.zip
+          archive: false
 
   build-linux:
     runs-on: ubuntu-latest
@@ -185,11 +186,12 @@ jobs:
           tar -C stage -czf SimpleParakeet-linux-x64.tar.gz SimpleParakeet
           sha256sum SimpleParakeet-linux-x64.tar.gz
 
+      # archive: false — otherwise Actions wraps the tarball in a zip on download
       - name: Upload build artifact
         uses: actions/upload-artifact@v7
         with:
-          name: SimpleParakeet-linux-x64
           path: SimpleParakeet-linux-x64.tar.gz
+          archive: false
 
   publish:
     needs: [build-windows, build-linux]
@@ -199,13 +201,14 @@ jobs:
       - name: Download Windows artifact
         uses: actions/download-artifact@v8
         with:
-          name: SimpleParakeet-windows-x64
+          # archive: false uses the filename as the artifact name
+          name: SimpleParakeet-windows-x64.zip
           path: dist
 
       - name: Download Linux artifact
         uses: actions/download-artifact@v8
         with:
-          name: SimpleParakeet-linux-x64
+          name: SimpleParakeet-linux-x64.tar.gz
           path: dist
 
       - name: Create GitHub Release
