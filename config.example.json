@@ -1,7 +1,10 @@
 {
   "host": "127.0.0.1",
   "api_port": 8210,
-  "parakeet_port": 8211,
-  "device": "cpu",
-  "model": "models/tdt_ctc-110m-f16.gguf"
+  "model_dir": "models/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8",
+  "onnx_threads": 4,
+  "lexicon_enabled": true,
+  "lexicon_file": "lexicon.json",
+  "lexicon_threshold": 0.89,
+  "lexicon_margin": 0.10
 }

@@ -1,12 +1,11 @@
 # SimpleParakeet
 
 A Simple, Local, Fast OpenAI Whisper-compatible speech-to-text inference solution for SkyrimNet,
-using [parakeet.cpp](https://github.com/mudler/parakeet.cpp) on CPU.
+using NVIDIA Parakeet TDT 0.6B v3 through Sherpa ONNX on CPU.
 
 | Port | Role |
 |------|------|
 | **8210** | Whisper API (SkyrimNet points here) |
-| **8211** | Internal recognition engine |
 
 ## Quick start (Windows)
 
@@ -35,10 +34,29 @@ Change ports later: `./launch.sh --setup`
 
 Localhost (`127.0.0.1`) does not require UFW/firewalld changes for Proton→host traffic.
 
-The model file is included under `models/` (CC BY 4.0; see `licenses/`).
+On first Windows launch, the pinned `sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8`
+model is downloaded from the official Sherpa ONNX release, verified against its
+SHA-256 checksum, then installed atomically. It is a multilingual INT8 ONNX
+model, loaded once at startup and reused for every submitted utterance.
+Configure its CPU thread count with `onnx_threads` in `config.json`; the
+default uses half of logical cores, capped at four.
+
+The client continues to own microphone capture. Both client-side PTT and
+client-side open-mic/VAD work without API changes: submit each finalized
+utterance to the standard Whisper endpoint. SimpleParakeet performs one
+offline decode per upload; it intentionally does not repeatedly decode a
+growing audio buffer and does not provide partial transcripts.
+
+## Skyrim lexicon
+
+Copy `lexicon.example.json` to `lexicon.json` to enable optional, conservative
+Skyrim name correction. Terms and aliases are case-insensitive when matched,
+while their configured canonical spelling is emitted. A correction must clear
+both a confidence threshold and a best-vs-second-best margin; uncertain text is
+left untouched. Tune these advanced safeguards with `lexicon_threshold` and
+`lexicon_margin` in `config.json`.
 
 ## Licenses
 
-See `licenses/`: shim MIT, parakeet.cpp MIT, GGUF CC-BY-4.0
-([mudler/parakeet-cpp-gguf](https://huggingface.co/mudler/parakeet-cpp-gguf)),
-FFmpeg LGPL when `bin/ffmpeg` / `bin/ffmpeg.exe` is included.
+See `licenses/` for the shim and FFmpeg notices. Distribution must include the
+Sherpa ONNX and Parakeet model notices alongside the model release.

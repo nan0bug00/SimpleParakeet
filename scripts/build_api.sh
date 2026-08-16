@@ -46,6 +46,7 @@ ENTRY="$SRC/server.py"
     --collect-all fastapi \
     --collect-all starlette \
     --collect-all httpx \
+    --collect-all sherpa_onnx \
     "$ENTRY"
 )
 

@@ -1,5 +1,4 @@
-# SimpleParakeet launcher
-# Defaults: API 8210, engine 8211 (override in config.json or with -Setup)
+# SimpleParakeet v2 launcher (in-process Sherpa ONNX backend).
 
 param(
     [switch]$Setup
@@ -77,19 +76,8 @@ function Ensure-FirstRun($cfg, [bool]$Force) {
         $apiPort = Read-PortPrompt "Whisper API port" $apiPort
     }
 
-    $pkPort = Read-PortPrompt "Internal engine port" ([int]$cfg.parakeet_port)
-    while ($pkPort -eq $apiPort -or (Test-PortListen $pkPort)) {
-        if ($pkPort -eq $apiPort) {
-            Write-Host "Internal engine port must be different from the API port."
-        } else {
-            Write-Host ("Port {0} is already in use." -f $pkPort)
-        }
-        $pkPort = Read-PortPrompt "Internal engine port" $pkPort
-    }
-
     $cfg.host = $hostBind
     $cfg.api_port = $apiPort
-    $cfg.parakeet_port = $pkPort
     Save-Config $cfg
     Set-Content -LiteralPath $SetupFlag -Value (Get-Date -Format o) -Encoding ASCII
 
@@ -100,9 +88,9 @@ function Ensure-FirstRun($cfg, [bool]$Force) {
 }
 
 function Resolve-ModelPath($cfg) {
-    $modelRel = [string]$cfg.model
+    $modelRel = [string]$cfg.model_dir
     if ([string]::IsNullOrWhiteSpace($modelRel)) {
-        $modelRel = "models/tdt_ctc-110m-f16.gguf"
+        $modelRel = "models/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8"
     }
     $modelPath = if ([System.IO.Path]::IsPathRooted($modelRel)) {
         $modelRel
@@ -110,7 +98,7 @@ function Resolve-ModelPath($cfg) {
         Join-Path $Root ($modelRel -replace "/", [IO.Path]::DirectorySeparatorChar)
     }
     if (-not (Test-Path -LiteralPath $modelPath)) {
-        throw "Missing model file: $modelPath"
+        throw "Missing Parakeet v3 model directory: $modelPath. Install the model bundle before launching."
     }
     return $modelPath
 }
@@ -119,12 +107,8 @@ function Assert-BundleFiles {
     $apiExe = Join-Path $BinDir "SimpleParakeet\SimpleParakeet.exe"
     $apiDir = Join-Path $BinDir "SimpleParakeet"
     $apiPy = Join-Path $Root "src\server.py"
-    $pkExe = Join-Path $BinDir "parakeet-server.exe"
     $ffmpeg = Join-Path $BinDir "ffmpeg.exe"
 
-    if (-not (Test-Path -LiteralPath $pkExe)) {
-        throw "Missing bin\parakeet-server.exe"
-    }
     if (-not (Test-Path -LiteralPath $apiExe) -and -not (Test-Path -LiteralPath $apiPy)) {
         throw "Missing bin\SimpleParakeet\SimpleParakeet.exe"
     }
@@ -132,7 +116,6 @@ function Assert-BundleFiles {
         ApiExe = $apiExe
         ApiDir = $apiDir
         HasExe = (Test-Path -LiteralPath $apiExe)
-        PkExe  = $pkExe
         Ffmpeg = $ffmpeg
         HasFfmpeg = (Test-Path -LiteralPath $ffmpeg)
     }
@@ -226,8 +209,6 @@ function Show-Endpoint([string]$HostBind, [int]$Port) {
     } catch { }
 }
 
-$oldDevice = $env:PARAKEET_DEVICE
-$oldUpstream = $env:PARAKEET_UPSTREAM
 $oldFfmpeg = $env:PARAKEET_FFMPEG
 $oldPath = $env:PATH
 
@@ -245,35 +226,32 @@ try {
     $cfg = Get-Config
     $cfg = Ensure-FirstRun -cfg $cfg -Force:$Setup
     $files = Assert-BundleFiles
-    $modelPath = Resolve-ModelPath $cfg
 
     $hostBind = [string]$cfg.host
     $apiPort = [int]$cfg.api_port
-    $pkPort = [int]$cfg.parakeet_port
-    $device = [string]$cfg.device
-    if ([string]::IsNullOrWhiteSpace($device)) { $device = "cpu" }
+    $onnxThreads = [int]$cfg.onnx_threads
+    if ($onnxThreads -lt 1) { $onnxThreads = [Math]::Min(4, [Math]::Max(1, [Environment]::ProcessorCount / 2)) }
 
     if (Test-PortListen $apiPort) {
         throw "Port $apiPort is already in use. Close whatever is using it, or run: pwsh -File launch.ps1 -Setup"
-    }
-    if (Test-PortListen $pkPort) {
-        throw "Port $pkPort is already in use. Close whatever is using it, or run: pwsh -File launch.ps1 -Setup"
     }
 
     if (-not $files.HasFfmpeg) {
         Write-Host "Note: bin\ffmpeg.exe not found. WAV and PCM still work."
     }
 
-    $env:PARAKEET_DEVICE = $device
-    $null = Start-Hidden `
-        -FilePath $files.PkExe `
-        -ArgumentList @("--model", $modelPath, "--host", $hostBind, "--port", "$pkPort") `
-        -WorkingDirectory $BinDir `
-        -OutLog (Join-Path $LogDir "parakeet.out.log") `
-        -ErrLog (Join-Path $LogDir "parakeet.err.log")
-
-    $upstream = "http://${hostBind}:${pkPort}/v1/audio/transcriptions"
-    $env:PARAKEET_UPSTREAM = $upstream
+    $env:PARAKEET_ROOT = $Root
+    $env:PARAKEET_MODEL_DIR = [string]$cfg.model_dir
+    if ([string]::IsNullOrWhiteSpace($env:PARAKEET_MODEL_DIR)) { $env:PARAKEET_MODEL_DIR = "models/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8" }
+    $env:PARAKEET_ONNX_THREADS = "$onnxThreads"
+    $env:PARAKEET_LEXICON_ENABLED = if ($cfg.lexicon_enabled -eq $false) { "false" } else { "true" }
+    if ($env:PARAKEET_LEXICON_ENABLED -eq "true") {
+        $lexiconFile = [string]$cfg.lexicon_file
+        if ([string]::IsNullOrWhiteSpace($lexiconFile)) { $lexiconFile = "lexicon.json" }
+        $env:PARAKEET_LEXICON_FILE = Join-Path $Root $lexiconFile
+        $env:PARAKEET_LEXICON_THRESHOLD = if ($null -eq $cfg.lexicon_threshold) { "0.89" } else { "$($cfg.lexicon_threshold)" }
+        $env:PARAKEET_LEXICON_MARGIN = if ($null -eq $cfg.lexicon_margin) { "0.10" } else { "$($cfg.lexicon_margin)" }
+    }
     $env:PARAKEET_FFMPEG = $files.Ffmpeg
     $env:PATH = $BinDir + ";" + $oldPath
 
@@ -301,7 +279,6 @@ try {
     if (-not (Wait-ApiReady -HostBind $hostBind -Port $apiPort)) {
         Write-Host ""
         Write-Host "Startup failed. Log tails:"
-        Show-LogTail (Join-Path $LogDir "parakeet.err.log")
         Show-LogTail (Join-Path $LogDir "api.err.log")
         throw "API did not become ready."
     }
@@ -313,8 +290,6 @@ try {
 }
 finally {
     Stop-Children
-    $env:PARAKEET_DEVICE = $oldDevice
-    $env:PARAKEET_UPSTREAM = $oldUpstream
     $env:PARAKEET_FFMPEG = $oldFfmpeg
     $env:PATH = $oldPath
 }

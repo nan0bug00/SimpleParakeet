@@ -1,4 +1,4 @@
-"""Decode uploaded audio (incl. raw PCM) to 16 kHz mono WAV bytes for parakeet.cpp."""
+"""Decode uploaded audio (incl. raw PCM) to 16 kHz mono WAV for Parakeet v3."""
 
 from __future__ import annotations
 
@@ -97,6 +97,14 @@ def _decode_wav(data: bytes) -> tuple[np.ndarray, int]:
     if channels > 1:
         samples = samples.reshape(-1, channels).mean(axis=1)
     return samples.astype(np.float32), int(sr)
+
+
+def wav16k_mono_to_float(data: bytes) -> np.ndarray:
+    """Decode a normalized API WAV to the float32 samples Sherpa expects."""
+    audio, sample_rate = _decode_wav(data)
+    if sample_rate != TARGET_SR:
+        raise ValueError(f"Expected {TARGET_SR} Hz WAV, received {sample_rate} Hz")
+    return audio.astype(np.float32, copy=False)
 
 
 def _find_ffmpeg() -> str | None:

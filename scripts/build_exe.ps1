@@ -65,6 +65,7 @@ try {
         --collect-all fastapi `
         --collect-all starlette `
         --collect-all httpx `
+        --collect-all sherpa_onnx `
         $entry
 } finally {
     Pop-Location

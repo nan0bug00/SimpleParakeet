@@ -1,0 +1,10 @@
+{
+  "entries": [
+    "Whiterun",
+    "Winterhold",
+    "Sovngarde",
+    {"canonical": "Paarthurnax", "aliases": ["partysnax", "parthurnax"], "category": "character"},
+    {"canonical": "High Hrothgar", "category": "location"},
+    {"canonical": "Dark Brotherhood", "category": "faction"}
+  ]
+}

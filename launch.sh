@@ -240,6 +240,63 @@ echo
 echo "SimpleParakeet"
 echo
 
+# v2 uses a single in-process Sherpa ONNX API process. Keep the legacy branch
+# below only so an existing v1 config can still be opened and migrated safely.
+if [[ ! -f "$CONFIG_PATH" && -f "$EXAMPLE_PATH" ]]; then
+  cp "$EXAMPLE_PATH" "$CONFIG_PATH"
+fi
+if [[ -f "$CONFIG_PATH" ]] && grep -q '"model_dir"' "$CONFIG_PATH"; then
+  mkdir -p "$LOG_DIR"
+  if [[ "$FORCE_SETUP" -eq 1 ]]; then rm -f "$SETUP_FLAG"; fi
+  if [[ ! -f "$SETUP_FLAG" ]]; then
+    [[ -t 0 ]] || { echo "Setup needs an interactive terminal." >&2; exit 1; }
+    HOST="$(json_get "$CONFIG_PATH" host 127.0.0.1)"
+    API_PORT="$(json_get "$CONFIG_PATH" api_port 8210)"
+    read -r -p "Listen address [${HOST}]: " host_in || host_in=""
+    [[ -n "${host_in// /}" ]] && HOST="${host_in// /}"
+    API_PORT="$(read_port_prompt "Whisper API port" "$API_PORT")"
+    while port_in_use "$API_PORT"; do
+      echo "Port ${API_PORT} is already in use."
+      API_PORT="$(read_port_prompt "Whisper API port" "$API_PORT")"
+    done
+    # Preserve all v2 options while changing only onboarding values.
+    python3 - "$CONFIG_PATH" "$HOST" "$API_PORT" <<'PY'
+import json, sys
+path, host, port = sys.argv[1:]
+with open(path, encoding="utf-8") as f: cfg = json.load(f)
+cfg.update(host=host, api_port=int(port))
+with open(path, "w", encoding="utf-8") as f: json.dump(cfg, f, indent=2); f.write("\n")
+PY
+    date -Iseconds >"$SETUP_FLAG" 2>/dev/null || date >"$SETUP_FLAG"
+  fi
+  HOST="$(json_get "$CONFIG_PATH" host 127.0.0.1)"
+  API_PORT="$(json_get "$CONFIG_PATH" api_port 8210)"
+  MODEL_REL="$(json_get "$CONFIG_PATH" model_dir models/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8)"
+  ONNX_THREADS="$(json_get "$CONFIG_PATH" onnx_threads 4)"
+  if port_in_use "$API_PORT"; then echo "Port ${API_PORT} is already in use." >&2; exit 1; fi
+  [[ -f "$API_BIN" ]] || { echo "Missing bin/SimpleParakeet/SimpleParakeet" >&2; exit 1; }
+  export PARAKEET_ROOT="$ROOT" PARAKEET_MODEL_DIR="$MODEL_REL" PARAKEET_ONNX_THREADS="$ONNX_THREADS"
+  export PARAKEET_LEXICON_ENABLED="$(json_get "$CONFIG_PATH" lexicon_enabled true)"
+  export PARAKEET_LEXICON_FILE="$(json_get "$CONFIG_PATH" lexicon_file lexicon.json)"
+  export PARAKEET_LEXICON_THRESHOLD="$(json_get "$CONFIG_PATH" lexicon_threshold 0.89)"
+  export PARAKEET_LEXICON_MARGIN="$(json_get "$CONFIG_PATH" lexicon_margin 0.10)"
+  echo "Starting SimpleParakeet v2 (first launch downloads the verified model if needed)..."
+  (
+    cd "$BIN_DIR/SimpleParakeet"
+    exec "$API_BIN" --host "$HOST" --port "$API_PORT"
+  ) >"$LOG_DIR/api.out.log" 2>"$LOG_DIR/api.err.log" &
+  API_PID=$!
+  if ! wait_api_ready "$HOST" "$API_PORT" 300; then
+    show_log_tail "$LOG_DIR/api.err.log"
+    echo "API did not become ready." >&2; exit 1
+  fi
+  show_endpoint "$HOST" "$API_PORT"
+  echo "Keep this terminal open while using speech-to-text."
+  echo "Press Enter to stop."
+  read -r _ || true
+  exit 0
+fi
+
 if [[ "$FORCE_SETUP" -eq 1 ]]; then
   rm -f "$SETUP_FLAG"
 fi
