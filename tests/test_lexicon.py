@@ -57,6 +57,58 @@ def test_global_selection_prefers_strong_long_span_without_collateral_changes():
     assert engine.correct("Visit high hrothgar, now.") == "Visit High Hrothgar, now."
 
 
+@pytest.mark.parametrize(
+    ("observed", "corrected"),
+    [
+        (
+            "I met Uthgerd outside Jorrvaskr before heading to High Hrothgar.",
+            "I met Uthgerd outside Jorrvaskr before heading to High Hrothgar.",
+        ),
+        (
+            "Bringyols told me to find Keerava near the market in Rifon",
+            "Brynjolf told me to find Keerava near the market in Riften",
+        ),
+        (
+            "Parthenax spoke to the Dovain at the top of the mountain",
+            "Paarthurnax spoke to the Dovahkiin at the top of the mountain",
+        ),
+        (
+            "I found Mzinchaleft after getting lost somewhere beyond Dawnstar.",
+            "I found Mzinchaleft after getting lost somewhere beyond Dawnstar.",
+        ),
+        (
+            "Proventus Avenicci was arguing with Balgruuf inside of Dragonons's",
+            "Proventus Avenicci was arguing with Balgruuf inside of Dragonsreach",
+        ),
+        (
+            "Uag Groshub sent me looking for a book somewhere near Labyrinthian",
+            "Urag gro-Shub sent me looking for a book somewhere near Labyrinthian",
+        ),
+        (
+            "We crossed Karthwasten on the way to investigate Betardum",
+            "We crossed Karthwasten on the way to investigate Bthardamz",
+        ),
+        (
+            "Hermaeus Mora appeared after I returned from Sooulstein with Nelof",
+            "Hermaeus Mora appeared after I returned from Solstheim with Neloth",
+        ),
+        (
+            "Gisargo and Berlina Marion were waiting for Tolfer at the college",
+            "J'zargo and Brelyna Maryon were waiting for Tolfdir at the college",
+        ),
+        (
+            "I found Nahkriin at Skolafen then returned to Skyrim to speak with Esben",
+            "I found Nahkriin at Skuldafn then returned to Skyrim to speak with Esbern",
+        ),
+    ],
+)
+def test_observed_110m_transcriptions_are_corrected_by_canonical_lexicon(
+    observed, corrected
+):
+    engine = SkyrimLexicon.load("lexicon.json")
+    assert engine.correct(observed) == corrected
+
+
 def test_full_and_short_character_names_can_coexist():
     engine = canonical_engine("Ulfberth", "Ulfberth War-Bear")
     assert engine.correct("Good morning, Ulfberth.") == "Good morning, Ulfberth."

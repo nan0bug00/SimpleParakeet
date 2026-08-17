@@ -8,6 +8,7 @@ import time
 import unicodedata
 from bisect import bisect_right
 from dataclasses import asdict, dataclass
+from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Iterable, Mapping
 
@@ -20,14 +21,15 @@ _COMMON_WORDS = frozenset(
     "a about after again all an and are around as at be before between but by can "
     "come did do down enter entered for from get go had has have he her here him his "
     "hold i in into is it its left long me my near no not of on or our out over right "
-    "room run she so some speak speaking take talk tell than that the their them then "
+    "college room run she so some speak speaking take talk tell than that the their them then "
     "there they this through to toward towards travel traveled travelled traveling up "
-    "us visit visited was we were what when where white who why will with you your"
+    "us visit visited was way we were what when where white who why will with you your"
     .split()
 )
 _LOCATION_CUES = frozenset(
-    "at enter entered from head headed in into leave left near reach reached return "
-    "returned to toward towards travel traveled travelled traveling visit visited"
+    "at enter entered from head headed in inside into investigate investigated leave left "
+    "near reach reached return returned to toward towards travel traveled travelled "
+    "traveling visit visited"
     .split()
 )
 
@@ -196,8 +198,34 @@ def _sequence_similarity(
     return best
 
 
-def _phonetic_similarity(left: str, right: str) -> float:
-    return _sequence_similarity(_phonetic_sequences(left), _phonetic_sequences(right))
+def _phonetic_similarity_from_parts(
+    left_keys: tuple[str, ...],
+    left_sequences: tuple[tuple[str, ...], ...],
+    right_keys: tuple[str, ...],
+    right_sequences: tuple[tuple[str, ...], ...],
+) -> float:
+    """Compare derived sound shapes without storing transcription aliases.
+
+    The detailed sequence score handles vowel variation. The coarse-key score
+    recovers consonant insertions, deletions, and reordered sounds commonly
+    emitted by compact ASR models (for example, Skolafen/Skuldafn).
+    """
+    key_score = max(
+        (
+            SequenceMatcher(None, left, right, autojunk=False).ratio()
+            for left in left_keys
+            for right in right_keys
+        ),
+        default=0.0,
+    )
+    return max(key_score, _sequence_similarity(left_sequences, right_sequences))
+
+
+def _orthographic_similarity(left: str, right: str) -> float:
+    """Use spelling only to rank phonetic finalists, never to retrieve them."""
+    return SequenceMatcher(
+        None, _ascii_letters(left), _ascii_letters(right), autojunk=False
+    ).ratio()
 
 
 @dataclass(frozen=True)
@@ -257,9 +285,10 @@ class _Proposal:
 class SkyrimLexicon:
     """Load-once canonical compiler and text-in/text-out correction engine."""
 
-    _MIN_SOURCE = 0.79
+    _MIN_RETRIEVAL = 0.60
+    _MIN_SOURCE = 0.68
     _MIN_TOTAL = 0.82
-    _MIN_RUNNER_MARGIN = 0.08
+    _MIN_RUNNER_MARGIN = 0.01
     _UNCHANGED_SCORE = 0.72
     _MIN_UNCHANGED_GAIN = 0.10
     _MAX_FINALISTS = 8
@@ -269,7 +298,6 @@ class SkyrimLexicon:
         compiled: list[CompiledEntry] = []
         canonical_exact: dict[str, list[int]] = {}
         compact_exact: dict[str, list[int]] = {}
-        phonetic: dict[str, list[int]] = {}
         max_tokens = 1
         for index, entry in enumerate(self.entries):
             normalized = _normal(entry.canonical)
@@ -281,12 +309,9 @@ class SkyrimLexicon:
             compiled.append(CompiledEntry(entry, normalized, compact, token_count, keys, sequences))
             canonical_exact.setdefault(normalized, []).append(index)
             compact_exact.setdefault(compact, []).append(index)
-            for key in keys:
-                phonetic.setdefault(key, []).append(index)
         self._compiled = tuple(compiled)
         self._canonical_exact = {key: tuple(value) for key, value in canonical_exact.items()}
         self._compact_exact = {key: tuple(value) for key, value in compact_exact.items()}
-        self._phonetic = {key: tuple(value) for key, value in phonetic.items()}
         # One canonical token may be split into several ASR words. The bound is
         # derived from the lexicon rather than a fixed one-to-four-token scan.
         self._max_span_tokens = min(10, max_tokens + 2)
@@ -326,10 +351,17 @@ class SkyrimLexicon:
         return cls(entries)
 
     @staticmethod
-    def _context_score(words: list[str], first: int, last: int) -> float:
-        left = words[max(0, first - 3) : first]
-        if any(word in _LOCATION_CUES for word in left):
-            return 0.18
+    def _context_score(
+        words: list[str], first: int, last: int, category: str | None
+    ) -> float:
+        if category not in {None, "location"} or first == 0:
+            return 0.0
+        immediate = words[first - 1]
+        cued = immediate in _LOCATION_CUES
+        if not cued and immediate in {"of", "the"} and first >= 2:
+            cued = words[first - 2] in _LOCATION_CUES
+        if cued:
+            return 0.08
         return 0.0
 
     @staticmethod
@@ -346,7 +378,9 @@ class SkyrimLexicon:
             penalty += 0.12
         return penalty
 
-    def _candidate_methods(self, source: str) -> dict[int, str]:
+    def _candidate_methods(
+        self, source: str, *, allow_phonetic: bool = True
+    ) -> dict[int, str]:
         normalized = _normal(source)
         compact = _compact(source)
         methods: dict[int, str] = {}
@@ -358,16 +392,64 @@ class SkyrimLexicon:
                 if priority[method] > current_priority:
                     methods[index] = method
 
-        add(self._phonetic_candidates(source), "phonetic")
-        add(self._compact_exact.get(compact, ()), "compact")
         add(self._canonical_exact.get(normalized, ()), "canonical")
+        if methods:
+            return methods
+        add(self._compact_exact.get(compact, ()), "compact")
+        if methods:
+            return methods
+        if allow_phonetic and self._phonetic_source_allowed(source):
+            add(self._phonetic_candidates(source), "phonetic")
         return methods
 
+    @staticmethod
+    def _phonetic_source_allowed(source: str) -> bool:
+        """Limit fuzzy work to ASR spans that look like proper names.
+
+        Canonical and compact exact matches remain case-insensitive. Approximate
+        correction uses the capitalization emitted for proper nouns by the
+        supported models, which prevents ordinary sentence text from being
+        consumed by a merely similar Skyrim name.
+        """
+        tokens = _WORD.findall(source)
+        if not tokens:
+            return False
+        if len(tokens) == 1:
+            return tokens[0][0].isupper() and len(_ascii_letters(tokens[0])) >= 4
+        final = tokens[-1]
+        return (
+            final[0].isupper()
+            and len(_ascii_letters(final)) >= 4
+            and final.casefold() not in _COMMON_WORDS
+        )
+
     def _phonetic_candidates(self, source: str) -> tuple[int, ...]:
-        found: set[int] = set()
-        for key in _phonetic_keys(source):
-            found.update(self._phonetic.get(key, ()))
-        return tuple(sorted(found))
+        source_keys = _phonetic_keys(source)
+        source_sequences = _phonetic_sequences(source)
+        source_token_count = len(_normal(source).split())
+        source_length = len(_ascii_letters(source))
+        ranked: list[tuple[float, int]] = []
+        for index, compiled in enumerate(self._compiled):
+            if abs(source_token_count - compiled.token_count) > 1:
+                continue
+            canonical_length = len(_ascii_letters(compiled.entry.canonical))
+            if min(source_length, canonical_length) / max(source_length, canonical_length) < 0.55:
+                continue
+            similarity = _phonetic_similarity_from_parts(
+                source_keys,
+                source_sequences,
+                compiled.phonetic_keys,
+                compiled.phonetic_sequences,
+            )
+            if similarity >= self._MIN_RETRIEVAL:
+                ranked.append((similarity, index))
+        ranked.sort(
+            key=lambda item: (
+                -item[0],
+                self._compiled[item[1]].entry.canonical.casefold(),
+            )
+        )
+        return tuple(index for _, index in ranked[: self._MAX_FINALISTS])
 
     def _score_span(
         self,
@@ -379,25 +461,67 @@ class SkyrimLexicon:
         end: int,
     ) -> tuple[_Proposal | None, SpanDecision | None]:
         source = text[start:end]
-        methods = self._candidate_methods(source)
+        source_words = _normal(source).split()
+        source_compact = _compact(source)
+        contains_exact_subspan = any(
+            " ".join(source_words[sub_first:sub_last]) in self._canonical_exact
+            for sub_first in range(len(source_words))
+            for sub_last in range(sub_first + 1, len(source_words) + 1)
+            if sub_first != 0 or sub_last != len(source_words)
+        )
+        methods = self._candidate_methods(
+            source, allow_phonetic=not contains_exact_subspan
+        )
         if not methods:
             return None, None
-        if len(methods) > self._MAX_FINALISTS:
-            decision = SpanDecision(start, end, source, (), False, "candidate-cap")
-            return None, decision
-        source_words = _normal(source).split()
-        context = self._context_score(words, first, last)
         base_scores = {"canonical": 1.00, "compact": 0.98}
+        source_keys = _phonetic_keys(source)
         source_sequences = _phonetic_sequences(source)
         scored: list[tuple[int, CandidateScore]] = []
         for index, method in methods.items():
+            compiled = self._compiled[index]
+            spelling_compatibility = _orthographic_similarity(
+                source, compiled.entry.canonical
+            )
+            phonetic_compatibility = _phonetic_similarity_from_parts(
+                source_keys,
+                source_sequences,
+                compiled.phonetic_keys,
+                compiled.phonetic_sequences,
+            )
+            if method == "phonetic":
+                if contains_exact_subspan:
+                    continue
+                token_difference = len(source_words) - compiled.token_count
+                if abs(token_difference) > 1:
+                    continue
+                # Do not swallow an adjacent word when the canonical itself is
+                # already an exact prefix/suffix of this wider source span.
+                if token_difference > 0 and (
+                    source_compact.startswith(compiled.compact)
+                    or source_compact.endswith(compiled.compact)
+                ):
+                    continue
+                if token_difference and spelling_compatibility < 0.70:
+                    continue
+                if (
+                    len(source_words) > 1
+                    and source_words[0] in _COMMON_WORDS
+                    and phonetic_compatibility < 0.90
+                ):
+                    continue
             compatibility = (
-                _sequence_similarity(source_sequences, self._compiled[index].phonetic_sequences)
+                0.80 * phonetic_compatibility
+                + 0.20 * spelling_compatibility
+                - 0.05 * abs(len(source_words) - compiled.token_count)
                 if method == "phonetic"
                 else base_scores[method]
             )
             source_score = compatibility
             risk = self._risk_penalty(source_words, method)
+            context = self._context_score(
+                words, first, last, compiled.entry.category
+            )
             confidence = 0.50 + 0.50 * compatibility if method == "phonetic" else compatibility
             total = confidence + context - risk
             scored.append(
@@ -413,14 +537,27 @@ class SkyrimLexicon:
                     ),
                 )
             )
+        if not scored:
+            return None, None
         scored.sort(key=lambda item: (-item[1].total, item[1].canonical.casefold()))
         best_index, best = scored[0]
         runner_total = scored[1][1].total if len(scored) > 1 else 0.0
+        exact_key_collision = False
+        if len(scored) > 1 and best.method == scored[1][1].method == "phonetic":
+            source_key_set = set(source_keys)
+            exact_key_collision = bool(
+                source_key_set.intersection(self._compiled[best_index].phonetic_keys)
+                and source_key_set.intersection(
+                    self._compiled[scored[1][0]].phonetic_keys
+                )
+            )
         reason = "accepted"
         if best.source_score < self._MIN_SOURCE:
             reason = "weak-source"
         elif best.total < self._MIN_TOTAL:
             reason = "low-confidence"
+        elif exact_key_collision:
+            reason = "ambiguous-runner-up"
         elif best.total - runner_total < self._MIN_RUNNER_MARGIN:
             reason = "ambiguous-runner-up"
         elif best.total - self._UNCHANGED_SCORE < self._MIN_UNCHANGED_GAIN:
@@ -435,7 +572,9 @@ class SkyrimLexicon:
                 start,
                 end,
                 self._compiled[best_index].entry.canonical,
-                best.total - self._UNCHANGED_SCORE + (end - start) * 1e-6,
+                (best.total - self._UNCHANGED_SCORE)
+                * self._compiled[best_index].token_count
+                + (end - start) * 1e-6,
             ),
             decision,
         )
