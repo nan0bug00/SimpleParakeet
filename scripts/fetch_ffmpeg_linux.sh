@@ -43,7 +43,7 @@ BtbN/FFmpeg-Builds linux64-lgpl (static LGPL build).
 
 FFmpeg is licensed under the LGPL (and optionally GPL for some builds).
 The lgpl variant omits GPL-only libraries. Keep FFmpeg as a separate
-executable (mere aggregation with the MIT-licensed shim / parakeet.cpp).
+executable (mere aggregation with SimpleParakeet and its Python dependencies).
 
 Upstream: https://ffmpeg.org/
 Linux builds used by the fetch script: https://github.com/BtbN/FFmpeg-Builds

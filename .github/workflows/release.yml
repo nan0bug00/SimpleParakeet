@@ -10,7 +10,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Release tag to create/update (e.g. v1.2.0). Leave empty to only build artifacts."
+        description: "Release tag to create/update (e.g. v1.3.0). Leave empty to only build artifacts."
         required: false
         default: ""
 
@@ -21,10 +21,8 @@ jobs:
   build-windows:
     runs-on: windows-latest
     steps:
-      - name: Checkout (with LFS for GGUF)
+      - name: Checkout
         uses: actions/checkout@v6
-        with:
-          lfs: true
 
       - name: Set up Python
         uses: actions/setup-python@v6
@@ -40,46 +38,6 @@ jobs:
         shell: pwsh
         run: pwsh -File scripts/fetch_ffmpeg.ps1
 
-      - name: Fetch parakeet-server (Windows CPU)
-        shell: pwsh
-        run: |
-          $rel = "${{ vars.PARAKEET_CPP_RELEASE }}"
-          if ([string]::IsNullOrWhiteSpace($rel)) { $rel = "v0.4.0" }
-          $api = "https://api.github.com/repos/mudler/parakeet.cpp/releases/tags/$rel"
-          $json = Invoke-RestMethod -Uri $api -Headers @{ "User-Agent" = "SimpleParakeet-CI" }
-          $assets = @($json.assets | ForEach-Object { $_.name })
-          Write-Host "Assets on $rel`:"
-          $assets | ForEach-Object { Write-Host "  $_" }
-          $pick = $json.assets | Where-Object {
-            $_.name -match 'win' -and $_.name -match 'cpu' -and $_.name -match '\.zip$'
-          } | Select-Object -First 1
-          if (-not $pick) {
-            $pick = $json.assets | Where-Object {
-              $_.name -match 'windows' -and $_.name -match '\.zip$'
-            } | Select-Object -First 1
-          }
-          if (-not $pick) { throw "No Windows zip found on mudler/parakeet.cpp $rel — set repo variable PARAKEET_CPP_RELEASE" }
-          Write-Host "Downloading $($pick.name)"
-          $zip = "parakeet-win.zip"
-          Invoke-WebRequest -Uri $pick.browser_download_url -OutFile $zip
-          Expand-Archive -LiteralPath $zip -DestinationPath "_pk" -Force
-          $exe = Get-ChildItem -Path "_pk" -Recurse -Filter "parakeet-server.exe" | Select-Object -First 1
-          if (-not $exe) { throw "parakeet-server.exe not found inside $($pick.name)" }
-          New-Item -ItemType Directory -Force -Path "bin" | Out-Null
-          Copy-Item $exe.FullName "bin\parakeet-server.exe" -Force
-
-      - name: Ensure model present
-        shell: pwsh
-        run: |
-          $m = "models\tdt_ctc-110m-f16.gguf"
-          if (-not (Test-Path -LiteralPath $m)) {
-            Write-Host "GGUF missing from checkout — downloading from Hugging Face"
-            New-Item -ItemType Directory -Force -Path "models" | Out-Null
-            $url = "https://huggingface.co/mudler/parakeet-cpp-gguf/resolve/main/tdt_ctc-110m-f16.gguf"
-            Invoke-WebRequest -Uri $url -OutFile $m
-          }
-          (Get-Item $m).Length
-
       - name: Stage release folder
         shell: pwsh
         run: |
@@ -89,23 +47,14 @@ jobs:
             "$stage",
             "$stage\bin",
             "$stage\bin\SimpleParakeet",
-            "$stage\models",
             "$stage\licenses",
-            "$stage\scripts",
-            "$stage\src",
             "$stage\logs"
           )
           foreach ($d in $dirs) { New-Item -ItemType Directory -Force -Path $d | Out-Null }
-          Copy-Item "RUN-ME.bat","launch.ps1","launch.cmd","README.md","CHANGELOG.md","config.example.json" $stage -Force
-          Copy-Item "bin\parakeet-server.exe","bin\ffmpeg.exe" "$stage\bin\" -Force
+          Copy-Item "RUN-ME.bat","launch.ps1","README.md","CHANGELOG.md","LICENSE","config.example.json","lexicon.json","lexicon.example.json" $stage -Force
+          Copy-Item "bin\ffmpeg.exe" "$stage\bin\" -Force
           Copy-Item "bin\SimpleParakeet\*" "$stage\bin\SimpleParakeet\" -Recurse -Force
-          Copy-Item "models\tdt_ctc-110m-f16.gguf" "$stage\models\" -Force
           Copy-Item "licenses\*" "$stage\licenses\" -Force
-          # Windows scripts only (exclude .sh)
-          Get-ChildItem "scripts" -File | Where-Object { $_.Extension -ne ".sh" } | ForEach-Object {
-            Copy-Item $_.FullName "$stage\scripts\" -Force
-          }
-          Copy-Item "src\*" "$stage\src\" -Force
           Compress-Archive -Path "$stage\*" -DestinationPath "SimpleParakeet-windows-x64.zip" -Force
           Get-FileHash "SimpleParakeet-windows-x64.zip" -Algorithm SHA256 | Format-List
 
@@ -122,10 +71,8 @@ jobs:
   build-linux:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout (with LFS for GGUF)
+      - name: Checkout
         uses: actions/checkout@v6
-        with:
-          lfs: true
 
       - name: Set up Python
         uses: actions/setup-python@v6
@@ -142,50 +89,18 @@ jobs:
           chmod +x scripts/fetch_ffmpeg_linux.sh
           ./scripts/fetch_ffmpeg_linux.sh
 
-      - name: Fetch parakeet-server (Linux CPU x64)
-        env:
-          PARAKEET_CPP_RELEASE: ${{ vars.PARAKEET_CPP_RELEASE }}
-        run: |
-          chmod +x scripts/fetch_parakeet_linux.sh
-          if [ -z "${PARAKEET_CPP_RELEASE}" ]; then
-            export PARAKEET_CPP_RELEASE=v0.4.0
-          fi
-          ./scripts/fetch_parakeet_linux.sh
-
-      - name: Ensure model present
-        run: |
-          m="models/tdt_ctc-110m-f16.gguf"
-          if [ ! -f "$m" ]; then
-            echo "GGUF missing from checkout — downloading from Hugging Face"
-            mkdir -p models
-            curl -fsSL -o "$m" \
-              "https://huggingface.co/mudler/parakeet-cpp-gguf/resolve/main/tdt_ctc-110m-f16.gguf"
-          fi
-          ls -la "$m"
-
       - name: Stage release folder
         run: |
           stage="stage/SimpleParakeet"
           rm -rf stage
-          mkdir -p "$stage"/{bin/SimpleParakeet,models,licenses,scripts,src,logs}
-          cp RUN-ME.sh launch.sh README.md CHANGELOG.md config.example.json "$stage/"
-          cp bin/parakeet-server bin/ffmpeg "$stage/bin/"
-          # Sibling .so from mudler bundle, if any
-          shopt -s nullglob
-          for lib in bin/*.so bin/*.so.*; do
-            cp -f "$lib" "$stage/bin/"
-          done
-          shopt -u nullglob
+          mkdir -p "$stage"/{bin/SimpleParakeet,licenses,logs}
+          cp RUN-ME.sh launch.sh README.md CHANGELOG.md LICENSE config.example.json lexicon.json lexicon.example.json "$stage/"
+          cp bin/ffmpeg "$stage/bin/"
           cp -a bin/SimpleParakeet/. "$stage/bin/SimpleParakeet/"
-          cp models/tdt_ctc-110m-f16.gguf "$stage/models/"
           cp licenses/* "$stage/licenses/"
-          # Linux scripts only
-          cp scripts/*.sh "$stage/scripts/" 2>/dev/null || true
-          cp src/* "$stage/src/"
           chmod +x "$stage/RUN-ME.sh" "$stage/launch.sh" \
-            "$stage/bin/parakeet-server" "$stage/bin/ffmpeg" \
-            "$stage/bin/SimpleParakeet/SimpleParakeet" \
-            "$stage/scripts/"*.sh 2>/dev/null || true
+            "$stage/bin/ffmpeg" \
+            "$stage/bin/SimpleParakeet/SimpleParakeet" 2>/dev/null || true
           # Same format as Windows: one zip, contents at archive root
           (cd stage/SimpleParakeet && zip -r "$GITHUB_WORKSPACE/SimpleParakeet-linux-x64.zip" .)
           sha256sum SimpleParakeet-linux-x64.zip

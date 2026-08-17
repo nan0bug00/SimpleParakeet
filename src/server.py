@@ -1,40 +1,96 @@
 """
-OpenAI-compatible Whisper transcription front-end for parakeet.cpp.
+OpenAI-compatible Whisper transcription service backed by Sherpa ONNX.
 
-Accepts the usual multipart Whisper upload (including raw PCM16), decodes to
-16 kHz mono WAV, proxies inference to the local parakeet-server, and optionally
-emits a fake SSE stream (full transcript as deltas + done).
+The Whisper client owns microphone/PTT/VAD capture. Each completed upload is
+decoded once by the reusable offline Parakeet v3 recognizer; this deliberately
+does not repeatedly decode a growing open-mic buffer.
 """
 
 from __future__ import annotations
 
 import json
+import logging
 import os
 import time
+from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Any, AsyncIterator, Iterable
 
-import httpx
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, PlainTextResponse, Response, StreamingResponse
 
-from audio import decode_to_wav16k_mono
-
-PARAKEET_UPSTREAM = os.environ.get(
-    "PARAKEET_UPSTREAM", "http://127.0.0.1:8142/v1/audio/transcriptions"
-).strip().rstrip("/")
-# cmd.exe `set VAR=value & ...` can leave a trailing space in the value; strip handles that.
-if not PARAKEET_UPSTREAM.endswith("/audio/transcriptions"):
-    # allow base like http://127.0.0.1:8142/v1
-    if PARAKEET_UPSTREAM.endswith("/v1"):
-        PARAKEET_UPSTREAM = PARAKEET_UPSTREAM + "/audio/transcriptions"
-    else:
-        PARAKEET_UPSTREAM = PARAKEET_UPSTREAM + "/v1/audio/transcriptions"
+from asr import ASRError, DEFAULT_ONNX_THREADS, MODEL_NAME, ParakeetRecognizer
+from audio import decode_to_wav16k_mono, wav16k_mono_to_float
+from lexicon import SkyrimLexicon
+from model_install import (
+    DEFAULT_MODEL_CHOICE,
+    default_model_directory,
+    ensure_model,
+    get_model_profile,
+)
 
 MODEL_ID = os.environ.get("PARAKEET_MODEL_ID", "whisper-1")
-HOST_MODEL_NAME = os.environ.get("PARAKEET_DISPLAY_NAME", "parakeet-tdt_ctc-110m-f16")
+HOST_MODEL_NAME = os.environ.get("PARAKEET_DISPLAY_NAME", MODEL_NAME)
+LOG = logging.getLogger("simpleparakeet")
 
-app = FastAPI(title="SimpleParakeet", version="1.0.0")
+
+def _root_relative(value: str) -> Path:
+    path = Path(value)
+    if path.is_absolute():
+        return path
+    return Path(os.environ.get("PARAKEET_ROOT", Path.cwd())) / path
+
+
+@asynccontextmanager
+async def lifespan(application: FastAPI):
+    configured_model_dir = os.environ.get("PARAKEET_MODEL_DIR")
+    selected_choice = os.environ.get("PARAKEET_MODEL_CHOICE")
+    if selected_choice:
+        profile = get_model_profile(selected_choice)
+        model_dir = (
+            _root_relative(configured_model_dir)
+            if configured_model_dir
+            else default_model_directory(_root_relative("."), profile)
+        )
+        model_type = profile.model_type
+        default_threads = profile.default_threads
+    elif configured_model_dir:
+        # An explicit ONNX directory bypasses automatic model download.
+        profile = None
+        model_dir = _root_relative(configured_model_dir)
+        model_type = os.environ.get("PARAKEET_MODEL_TYPE", "nemo_transducer")
+        default_threads = DEFAULT_ONNX_THREADS
+    else:
+        profile = get_model_profile(DEFAULT_MODEL_CHOICE)
+        model_dir = default_model_directory(_root_relative("."), profile)
+        model_type = profile.model_type
+        default_threads = profile.default_threads
+    threads = int(os.environ.get("PARAKEET_ONNX_THREADS", default_threads))
+    lexicon_file = _root_relative(os.environ.get("PARAKEET_LEXICON_FILE", "lexicon.json"))
+    try:
+        enabled = os.environ.get("PARAKEET_LEXICON_ENABLED", "true").strip().lower() not in {"0", "false", "no", "off"}
+        lexicon = SkyrimLexicon.load(
+            lexicon_file,
+        ) if enabled else SkyrimLexicon()
+    except ValueError as exc:
+        LOG.warning("Lexicon disabled: %s", exc)
+        lexicon = SkyrimLexicon()
+    recognizer = ParakeetRecognizer(model_dir, threads, model_type=model_type)
+    started = time.perf_counter()
+    try:
+        if profile is not None:
+            ensure_model(profile, model_dir)
+        recognizer.initialize()
+    except ASRError as exc:
+        # Fail startup with a useful error instead of accepting requests that all fail.
+        raise RuntimeError(str(exc)) from exc
+    application.state.recognizer = recognizer
+    application.state.lexicon = lexicon
+    LOG.info("Parakeet v3 initialized in %.2fs using %s ONNX threads", time.perf_counter() - started, threads)
+    yield
+
+app = FastAPI(title="SimpleParakeet", version="2.0.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -64,50 +120,6 @@ def _parse_timestamp_granularities(
     for item in raw:
         out.extend(p for p in str(item).split(",") if p)
     return out
-
-
-async def _upstream_transcribe(
-    wav_bytes: bytes,
-    *,
-    model: str,
-    language: str | None,
-    prompt: str | None,
-    response_format: str,
-    temperature: str | None,
-    timestamp_granularities: list[str],
-) -> tuple[int, bytes, str]:
-    """POST WAV to parakeet-server. Returns status, body, content-type."""
-    # Always ask upstream for json/verbose_json — we reshape text/SSE locally.
-    upstream_fmt = "verbose_json" if response_format == "verbose_json" else "json"
-    multipart: list[tuple[str, tuple[str | None, str] | tuple[str, bytes, str]]] = [
-        ("model", (None, model or "parakeet")),
-        ("response_format", (None, upstream_fmt)),
-    ]
-    if language:
-        multipart.append(("language", (None, language)))
-    if prompt:
-        multipart.append(("prompt", (None, prompt)))
-    if temperature is not None and temperature != "":
-        multipart.append(("temperature", (None, str(temperature))))
-    for g in timestamp_granularities:
-        multipart.append(("timestamp_granularities[]", (None, g)))
-    multipart.append(("file", ("audio.wav", wav_bytes, "audio/wav")))
-
-    try:
-        async with httpx.AsyncClient(timeout=httpx.Timeout(120.0)) as client:
-            resp = await client.post(PARAKEET_UPSTREAM, files=multipart)
-            ctype = resp.headers.get("content-type", "application/json")
-            return resp.status_code, resp.content, ctype
-    except httpx.ConnectError as exc:
-        raise HTTPException(
-            status_code=502,
-            detail=(
-                f"Cannot reach parakeet-server at {PARAKEET_UPSTREAM}. "
-                "Is it running?"
-            ),
-        ) from exc
-    except httpx.HTTPError as exc:
-        raise HTTPException(status_code=502, detail=f"Upstream error: {exc}") from exc
 
 
 def _extract_text(payload: Any) -> str:
@@ -153,22 +165,11 @@ async def _stream_fake_sse(text: str) -> AsyncIterator[bytes]:
 
 @app.get("/health")
 async def health() -> dict[str, Any]:
-    from urllib.parse import urlparse
-
-    upstream_ok = False
-    try:
-        u = urlparse(PARAKEET_UPSTREAM)
-        async with httpx.AsyncClient(timeout=1.5) as client:
-            # parakeet-server may 404 on /, but a TCP response means it's up
-            await client.get(f"{u.scheme}://{u.netloc}/")
-            upstream_ok = True
-    except Exception:
-        upstream_ok = False
     return {
         "ok": True,
         "model": HOST_MODEL_NAME,
-        "upstream": PARAKEET_UPSTREAM,
-        "upstream_reachable": upstream_ok,
+        "backend": "sherpa-onnx",
+        "onnx_threads": app.state.recognizer.num_threads,
     }
 
 
@@ -239,39 +240,16 @@ async def _handle_transcription(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     want_stream = _truthy(stream)
-    # Upstream never streams; we always fetch json then reshape.
-    upstream_fmt = "verbose_json" if response_format == "verbose_json" else "json"
-    status, body, _ctype = await _upstream_transcribe(
-        wav_bytes,
-        model=model,
-        language=language,
-        prompt=prompt,
-        response_format=upstream_fmt,
-        temperature=temperature,
-        timestamp_granularities=timestamp_granularities or [],
-    )
-    if status >= 400:
-        detail: Any
-        try:
-            detail = json.loads(body)
-        except Exception:
-            detail = body.decode("utf-8", errors="replace")
-        raise HTTPException(status_code=status, detail=detail)
-
     try:
-        payload = json.loads(body)
-    except json.JSONDecodeError:
-        # Unexpected plain text from upstream
-        payload = {"text": body.decode("utf-8", errors="replace")}
-
-    if isinstance(payload, dict):
-        payload.setdefault("task", "transcribe")
-        if language:
-            payload.setdefault("language", language)
-        else:
-            payload.setdefault("language", "en")
-
-    text = _extract_text(payload)
+        started = time.perf_counter()
+        text = request.app.state.recognizer.transcribe(wav16k_mono_to_float(wav_bytes))
+        asr_seconds = time.perf_counter() - started
+        corrected = request.app.state.lexicon.correct(text)
+        LOG.debug("Transcribed %.2fs; lexicon changed=%s", asr_seconds, corrected != text)
+        text = corrected
+    except (ASRError, ValueError) as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    payload: dict[str, Any] = {"text": text, "task": "transcribe", "language": language or "en"}
 
     if want_stream:
         return StreamingResponse(
@@ -288,7 +266,7 @@ async def _handle_transcription(
         return PlainTextResponse(text)
 
     if response_format == "verbose_json":
-        # Ensure OpenAI-ish verbose shape even if upstream is minimal
+        # Ensure the OpenAI-compatible verbose response shape.
         if isinstance(payload, dict) and "segments" not in payload:
             duration = payload.get("duration")
             payload = {

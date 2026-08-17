@@ -3,7 +3,7 @@ gyan.dev Windows essentials build (or another LGPL build you drop in bin/).
 
 FFmpeg is licensed under the LGPL (and optionally GPL for some builds).
 The essentials build is commonly LGPL. Keep FFmpeg as a separate executable
-(mere aggregation with the MIT-licensed shim / parakeet.cpp).
+(mere aggregation with SimpleParakeet and its Python dependencies).
 
 Upstream: https://ffmpeg.org/
 Windows builds used by the fetch script: https://www.gyan.dev/ffmpeg/builds/

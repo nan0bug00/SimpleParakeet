@@ -1,0 +1,13 @@
+{
+  "_comment": "Add canonical Skyrim names or terms to lexicon.json. The program derives word-boundary and pronunciation forms automatically. category is optional organizational metadata.",
+  "_categories": ["character", "location", "faction", "item", "spell", "creature", "dragon", "term"],
+  "entries": [
+    "Whiterun",
+    "Winterhold",
+    "Sovngarde",
+    {"canonical": "Paarthurnax", "category": "character"},
+    {"canonical": "Greybeards", "category": "faction"},
+    {"canonical": "High Hrothgar", "category": "location"},
+    {"canonical": "Dark Brotherhood", "category": "faction"}
+  ]
+}

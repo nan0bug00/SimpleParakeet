@@ -1,18 +1,19 @@
-Model weights: tdt_ctc-110m-f16.gguf
-=====================================
+NVIDIA Parakeet model weights
+=============================
 
-This bundle includes models/tdt_ctc-110m-f16.gguf.
+SimpleParakeet downloads one selected Sherpa ONNX export on first launch. The
+model is not bundled in the release archive.
 
-GGUF conversion / packaging:
-  https://huggingface.co/mudler/parakeet-cpp-gguf
-  File: tdt_ctc-110m-f16.gguf
-  License: Creative Commons Attribution 4.0 International (CC BY 4.0)
-  Full text: licenses/LICENSE-CC-BY-4.0.txt
-  https://creativecommons.org/licenses/by/4.0/
+English model:
+  NVIDIA Parakeet TDT-CTC 110M
+  https://huggingface.co/nvidia/parakeet-tdt_ctc-110m
 
-Attribution: credit mudler / the LocalAI team for the GGUF packaging
-(https://huggingface.co/mudler/parakeet-cpp-gguf).
+Multilingual model:
+  NVIDIA Parakeet TDT 0.6B v3
+  https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3
 
-Underlying ASR model: NVIDIA Parakeet (see the original model card, e.g.
-https://huggingface.co/nvidia/parakeet-tdt_ctc-110m) for any additional
-NVIDIA terms that apply to the weights.
+Both model cards identify the weights as Creative Commons Attribution 4.0
+(CC BY 4.0). The full license text is in LICENSE-CC-BY-4.0.txt.
+
+The ONNX exports are downloaded from the official sherpa-onnx model releases:
+  https://github.com/k2-fsa/sherpa-onnx/releases/tag/asr-models

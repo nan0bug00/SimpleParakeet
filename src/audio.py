@@ -1,4 +1,4 @@
-"""Decode uploaded audio (incl. raw PCM) to 16 kHz mono WAV bytes for parakeet.cpp."""
+"""Decode uploaded audio (incl. raw PCM) to 16 kHz mono WAV for Parakeet v3."""
 
 from __future__ import annotations
 
@@ -99,6 +99,14 @@ def _decode_wav(data: bytes) -> tuple[np.ndarray, int]:
     return samples.astype(np.float32), int(sr)
 
 
+def wav16k_mono_to_float(data: bytes) -> np.ndarray:
+    """Decode a normalized API WAV to the float32 samples Sherpa expects."""
+    audio, sample_rate = _decode_wav(data)
+    if sample_rate != TARGET_SR:
+        raise ValueError(f"Expected {TARGET_SR} Hz WAV, received {sample_rate} Hz")
+    return audio.astype(np.float32, copy=False)
+
+
 def _find_ffmpeg() -> str | None:
     env = (os.environ.get("PARAKEET_FFMPEG") or "").strip()
     if env and Path(env).is_file():
@@ -132,7 +140,7 @@ def _ffmpeg_to_wav16k(data: bytes, filename: str | None) -> bytes:
             "Install ffmpeg on PATH or place ffmpeg / ffmpeg.exe in bin/."
         )
     suffix = Path(filename or "audio.bin").suffix or ".bin"
-    with tempfile.TemporaryDirectory(prefix="parakeet-api-") as td:
+    with tempfile.TemporaryDirectory(prefix="simpleparakeet-audio-") as td:
         src = Path(td) / f"in{suffix}"
         dst = Path(td) / "out.wav"
         src.write_bytes(data)
@@ -169,7 +177,7 @@ def decode_to_wav16k_mono(
     force_pcm: bool = False,
 ) -> bytes:
     """
-    Return a RIFF WAV (16-bit PCM, mono, 16 kHz) suitable for parakeet-server.
+    Return a RIFF WAV (16-bit PCM, mono, 16 kHz) suitable for Sherpa ONNX.
     """
     if not data:
         raise ValueError("Empty audio payload")

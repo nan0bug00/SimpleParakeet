@@ -1,5 +1,4 @@
-# SimpleParakeet launcher
-# Defaults: API 8210, engine 8211 (override in config.json or with -Setup)
+# SimpleParakeet v2 launcher (in-process Sherpa ONNX backend).
 
 param(
     [switch]$Setup
@@ -56,6 +55,14 @@ function Save-Config($cfg) {
     $cfg | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $ConfigPath -Encoding UTF8
 }
 
+function Set-ConfigValue($cfg, [string]$Name, $Value) {
+    if ($null -eq $cfg.PSObject.Properties[$Name]) {
+        $cfg | Add-Member -NotePropertyName $Name -NotePropertyValue $Value
+    } else {
+        $cfg.$Name = $Value
+    }
+}
+
 function Ensure-FirstRun($cfg, [bool]$Force) {
     if ((Test-Path -LiteralPath $SetupFlag) -and -not $Force) {
         return $cfg
@@ -65,6 +72,25 @@ function Ensure-FirstRun($cfg, [bool]$Force) {
     Write-Host "SimpleParakeet setup"
     Write-Host "Press Enter to keep the value in [brackets]."
     Write-Host ""
+
+    $currentChoice = [string]$cfg.model_choice
+    $hasExplicitModel = [string]::IsNullOrWhiteSpace($currentChoice) -and
+        -not [string]::IsNullOrWhiteSpace([string]$cfg.model_dir
+        )
+    if (-not $hasExplicitModel) {
+        if ($currentChoice -ne "multilingual-600m") { $currentChoice = "english-110m" }
+        Write-Host "Choose the speech model before download:"
+        Write-Host "  1. English - Fast (110M), recommended"
+        Write-Host "  2. Multilingual (0.6B), slower"
+        $defaultNumber = if ($currentChoice -eq "multilingual-600m") { "2" } else { "1" }
+        while ($true) {
+            $modelIn = Read-Host ("Model [{0}]" -f $defaultNumber)
+            if ([string]::IsNullOrWhiteSpace($modelIn)) { $modelIn = $defaultNumber }
+            if ($modelIn.Trim() -eq "1") { $currentChoice = "english-110m"; break }
+            if ($modelIn.Trim() -eq "2") { $currentChoice = "multilingual-600m"; break }
+            Write-Host "Enter 1 or 2."
+        }
+    }
 
     $hostBind = [string]$cfg.host
     if ([string]::IsNullOrWhiteSpace($hostBind)) { $hostBind = "127.0.0.1" }
@@ -77,19 +103,11 @@ function Ensure-FirstRun($cfg, [bool]$Force) {
         $apiPort = Read-PortPrompt "Whisper API port" $apiPort
     }
 
-    $pkPort = Read-PortPrompt "Internal engine port" ([int]$cfg.parakeet_port)
-    while ($pkPort -eq $apiPort -or (Test-PortListen $pkPort)) {
-        if ($pkPort -eq $apiPort) {
-            Write-Host "Internal engine port must be different from the API port."
-        } else {
-            Write-Host ("Port {0} is already in use." -f $pkPort)
-        }
-        $pkPort = Read-PortPrompt "Internal engine port" $pkPort
-    }
-
     $cfg.host = $hostBind
     $cfg.api_port = $apiPort
-    $cfg.parakeet_port = $pkPort
+    if (-not $hasExplicitModel) {
+        Set-ConfigValue $cfg "model_choice" $currentChoice
+    }
     Save-Config $cfg
     Set-Content -LiteralPath $SetupFlag -Value (Get-Date -Format o) -Encoding ASCII
 
@@ -99,32 +117,12 @@ function Ensure-FirstRun($cfg, [bool]$Force) {
     return $cfg
 }
 
-function Resolve-ModelPath($cfg) {
-    $modelRel = [string]$cfg.model
-    if ([string]::IsNullOrWhiteSpace($modelRel)) {
-        $modelRel = "models/tdt_ctc-110m-f16.gguf"
-    }
-    $modelPath = if ([System.IO.Path]::IsPathRooted($modelRel)) {
-        $modelRel
-    } else {
-        Join-Path $Root ($modelRel -replace "/", [IO.Path]::DirectorySeparatorChar)
-    }
-    if (-not (Test-Path -LiteralPath $modelPath)) {
-        throw "Missing model file: $modelPath"
-    }
-    return $modelPath
-}
-
 function Assert-BundleFiles {
     $apiExe = Join-Path $BinDir "SimpleParakeet\SimpleParakeet.exe"
     $apiDir = Join-Path $BinDir "SimpleParakeet"
     $apiPy = Join-Path $Root "src\server.py"
-    $pkExe = Join-Path $BinDir "parakeet-server.exe"
     $ffmpeg = Join-Path $BinDir "ffmpeg.exe"
 
-    if (-not (Test-Path -LiteralPath $pkExe)) {
-        throw "Missing bin\parakeet-server.exe"
-    }
     if (-not (Test-Path -LiteralPath $apiExe) -and -not (Test-Path -LiteralPath $apiPy)) {
         throw "Missing bin\SimpleParakeet\SimpleParakeet.exe"
     }
@@ -132,7 +130,6 @@ function Assert-BundleFiles {
         ApiExe = $apiExe
         ApiDir = $apiDir
         HasExe = (Test-Path -LiteralPath $apiExe)
-        PkExe  = $pkExe
         Ffmpeg = $ffmpeg
         HasFfmpeg = (Test-Path -LiteralPath $ffmpeg)
     }
@@ -172,7 +169,7 @@ function Start-Hidden {
 }
 
 function Stop-Children {
-    # PyInstaller onefile spawns a child; kill the whole tree.
+    # Stop the API and any worker process it spawned.
     foreach ($childId in @($script:ChildPids)) {
         try {
             & taskkill.exe /F /T /PID $childId 2>$null | Out-Null
@@ -226,8 +223,6 @@ function Show-Endpoint([string]$HostBind, [int]$Port) {
     } catch { }
 }
 
-$oldDevice = $env:PARAKEET_DEVICE
-$oldUpstream = $env:PARAKEET_UPSTREAM
 $oldFfmpeg = $env:PARAKEET_FFMPEG
 $oldPath = $env:PATH
 
@@ -245,35 +240,43 @@ try {
     $cfg = Get-Config
     $cfg = Ensure-FirstRun -cfg $cfg -Force:$Setup
     $files = Assert-BundleFiles
-    $modelPath = Resolve-ModelPath $cfg
 
     $hostBind = [string]$cfg.host
     $apiPort = [int]$cfg.api_port
-    $pkPort = [int]$cfg.parakeet_port
-    $device = [string]$cfg.device
-    if ([string]::IsNullOrWhiteSpace($device)) { $device = "cpu" }
+    $onnxThreads = [int]$cfg.onnx_threads
+    if ($onnxThreads -lt 1) { $onnxThreads = [Math]::Min(4, [Math]::Max(1, [Environment]::ProcessorCount / 2)) }
 
     if (Test-PortListen $apiPort) {
         throw "Port $apiPort is already in use. Close whatever is using it, or run: pwsh -File launch.ps1 -Setup"
-    }
-    if (Test-PortListen $pkPort) {
-        throw "Port $pkPort is already in use. Close whatever is using it, or run: pwsh -File launch.ps1 -Setup"
     }
 
     if (-not $files.HasFfmpeg) {
         Write-Host "Note: bin\ffmpeg.exe not found. WAV and PCM still work."
     }
 
-    $env:PARAKEET_DEVICE = $device
-    $null = Start-Hidden `
-        -FilePath $files.PkExe `
-        -ArgumentList @("--model", $modelPath, "--host", $hostBind, "--port", "$pkPort") `
-        -WorkingDirectory $BinDir `
-        -OutLog (Join-Path $LogDir "parakeet.out.log") `
-        -ErrLog (Join-Path $LogDir "parakeet.err.log")
-
-    $upstream = "http://${hostBind}:${pkPort}/v1/audio/transcriptions"
-    $env:PARAKEET_UPSTREAM = $upstream
+    $env:PARAKEET_ROOT = $Root
+    $modelChoice = [string]$cfg.model_choice
+    $configuredModelDir = [string]$cfg.model_dir
+    if (-not [string]::IsNullOrWhiteSpace($modelChoice)) {
+        $env:PARAKEET_MODEL_CHOICE = $modelChoice
+        Remove-Item Env:PARAKEET_MODEL_DIR -ErrorAction SilentlyContinue
+        Remove-Item Env:PARAKEET_MODEL_TYPE -ErrorAction SilentlyContinue
+    } elseif (-not [string]::IsNullOrWhiteSpace($configuredModelDir)) {
+        Remove-Item Env:PARAKEET_MODEL_CHOICE -ErrorAction SilentlyContinue
+        $env:PARAKEET_MODEL_DIR = $configuredModelDir
+        $env:PARAKEET_MODEL_TYPE = if ([string]::IsNullOrWhiteSpace([string]$cfg.model_type)) { "nemo_transducer" } else { [string]$cfg.model_type }
+    } else {
+        Remove-Item Env:PARAKEET_MODEL_CHOICE -ErrorAction SilentlyContinue
+        Remove-Item Env:PARAKEET_MODEL_DIR -ErrorAction SilentlyContinue
+        Remove-Item Env:PARAKEET_MODEL_TYPE -ErrorAction SilentlyContinue
+    }
+    $env:PARAKEET_ONNX_THREADS = "$onnxThreads"
+    $env:PARAKEET_LEXICON_ENABLED = if ($cfg.lexicon_enabled -eq $false) { "false" } else { "true" }
+    if ($env:PARAKEET_LEXICON_ENABLED -eq "true") {
+        $lexiconFile = [string]$cfg.lexicon_file
+        if ([string]::IsNullOrWhiteSpace($lexiconFile)) { $lexiconFile = "lexicon.json" }
+        $env:PARAKEET_LEXICON_FILE = Join-Path $Root $lexiconFile
+    }
     $env:PARAKEET_FFMPEG = $files.Ffmpeg
     $env:PATH = $BinDir + ";" + $oldPath
 
@@ -285,9 +288,13 @@ try {
             -OutLog (Join-Path $LogDir "api.out.log") `
             -ErrLog (Join-Path $LogDir "api.err.log")
     } else {
-        $py = Join-Path $Root "..\parakeet-api\venv\Scripts\python.exe"
+        $py = Join-Path $Root "venv\Scripts\python.exe"
         if (-not (Test-Path -LiteralPath $py)) {
-            throw "Missing bin\SimpleParakeet\SimpleParakeet.exe (API binary not built yet)."
+            $pythonCommand = Get-Command python -ErrorAction SilentlyContinue
+            if ($pythonCommand) { $py = $pythonCommand.Source }
+        }
+        if (-not $py -or -not (Test-Path -LiteralPath $py)) {
+            throw "Missing bin\SimpleParakeet\SimpleParakeet.exe and no local Python was found."
         }
         $srcDir = Join-Path $Root "src"
         $null = Start-Hidden `
@@ -301,7 +308,6 @@ try {
     if (-not (Wait-ApiReady -HostBind $hostBind -Port $apiPort)) {
         Write-Host ""
         Write-Host "Startup failed. Log tails:"
-        Show-LogTail (Join-Path $LogDir "parakeet.err.log")
         Show-LogTail (Join-Path $LogDir "api.err.log")
         throw "API did not become ready."
     }
@@ -313,8 +319,6 @@ try {
 }
 finally {
     Stop-Children
-    $env:PARAKEET_DEVICE = $oldDevice
-    $env:PARAKEET_UPSTREAM = $oldUpstream
     $env:PARAKEET_FFMPEG = $oldFfmpeg
     $env:PATH = $oldPath
 }
