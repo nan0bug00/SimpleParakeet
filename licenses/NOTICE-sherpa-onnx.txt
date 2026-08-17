@@ -1,0 +1,8 @@
+sherpa-onnx
+============
+
+SimpleParakeet uses sherpa-onnx for local ONNX speech recognition.
+
+Upstream: https://github.com/k2-fsa/sherpa-onnx
+License: Apache License 2.0
+Full text: LICENSE-sherpa-onnx.txt

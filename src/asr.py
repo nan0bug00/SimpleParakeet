@@ -19,9 +19,16 @@ class ASRError(RuntimeError):
 class ParakeetRecognizer:
     """One reusable offline recognizer; decode calls are serialized safely."""
 
-    def __init__(self, model_dir: str | Path, num_threads: int = DEFAULT_ONNX_THREADS):
+    def __init__(
+        self,
+        model_dir: str | Path,
+        num_threads: int = DEFAULT_ONNX_THREADS,
+        *,
+        model_type: str = "nemo_transducer",
+    ):
         self.model_dir = Path(model_dir)
         self.num_threads = max(1, int(num_threads))
+        self.model_type = model_type
         self._recognizer = None
         self._lock = threading.Lock()
 
@@ -41,22 +48,29 @@ class ParakeetRecognizer:
                 )
             return candidates[0]
 
-        encoder = required("encoder", ".onnx")
-        decoder = required("decoder", ".onnx")
-        joiner = required("joiner", ".onnx")
-        tokens = required("tokens", ".txt")
         try:
             import sherpa_onnx
 
-            self._recognizer = sherpa_onnx.OfflineRecognizer.from_transducer(
-                encoder=str(encoder),
-                decoder=str(decoder),
-                joiner=str(joiner),
-                tokens=str(tokens),
-                num_threads=self.num_threads,
-                model_type="nemo_transducer",
-                debug=False,
-            )
+            if self.model_type == "nemo_ctc":
+                self._recognizer = sherpa_onnx.OfflineRecognizer.from_nemo_ctc(
+                    model=str(required("model", ".onnx")),
+                    tokens=str(required("tokens", ".txt")),
+                    num_threads=self.num_threads,
+                    provider="cpu",
+                    debug=False,
+                )
+            elif self.model_type == "nemo_transducer":
+                self._recognizer = sherpa_onnx.OfflineRecognizer.from_transducer(
+                    encoder=str(required("encoder", ".onnx")),
+                    decoder=str(required("decoder", ".onnx")),
+                    joiner=str(required("joiner", ".onnx")),
+                    tokens=str(required("tokens", ".txt")),
+                    num_threads=self.num_threads,
+                    model_type="nemo_transducer",
+                    debug=False,
+                )
+            else:
+                raise ASRError(f"Unsupported Parakeet model type: {self.model_type}")
         except ImportError as exc:
             raise ASRError("sherpa-onnx is not installed; reinstall SimpleParakeet.") from exc
         except Exception as exc:

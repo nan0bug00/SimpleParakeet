@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Builds bin/SimpleParakeet/SimpleParakeet with PyInstaller --onedir (no UPX).
-# Does NOT start servers. Does NOT download the GGUF.
+# Does not start the server or download an ASR model.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

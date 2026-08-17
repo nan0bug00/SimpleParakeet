@@ -140,7 +140,7 @@ def _ffmpeg_to_wav16k(data: bytes, filename: str | None) -> bytes:
             "Install ffmpeg on PATH or place ffmpeg / ffmpeg.exe in bin/."
         )
     suffix = Path(filename or "audio.bin").suffix or ".bin"
-    with tempfile.TemporaryDirectory(prefix="parakeet-api-") as td:
+    with tempfile.TemporaryDirectory(prefix="simpleparakeet-audio-") as td:
         src = Path(td) / f"in{suffix}"
         dst = Path(td) / "out.wav"
         src.write_bytes(data)
@@ -177,7 +177,7 @@ def decode_to_wav16k_mono(
     force_pcm: bool = False,
 ) -> bytes:
     """
-    Return a RIFF WAV (16-bit PCM, mono, 16 kHz) suitable for parakeet-server.
+    Return a RIFF WAV (16-bit PCM, mono, 16 kHz) suitable for Sherpa ONNX.
     """
     if not data:
         raise ValueError("Empty audio payload")

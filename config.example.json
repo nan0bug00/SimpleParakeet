@@ -1,10 +1,8 @@
 {
   "host": "127.0.0.1",
   "api_port": 8210,
-  "model_dir": "models/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8",
+  "model_choice": "english-110m",
   "onnx_threads": 4,
   "lexicon_enabled": true,
-  "lexicon_file": "lexicon.json",
-  "lexicon_threshold": 0.89,
-  "lexicon_margin": 0.10
+  "lexicon_file": "lexicon.json"
 }

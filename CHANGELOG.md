@@ -2,6 +2,19 @@
 
 All notable changes to SimpleParakeet are documented here.
 
+## [1.3.0] — 2026-08-16
+
+### Added
+- First-run choice between the recommended English 110M model and the slower multilingual 0.6B model before either is downloaded.
+- A shipped canonical Skyrim lexicon with model-agnostic pronunciation and word-boundary correction.
+
+### Changed
+- Replaced the parakeet.cpp/GGUF backend with in-process Sherpa ONNX recognition.
+- `White Run` is always canonicalized to `Whiterun` in this Skyrim-focused service.
+
+### Removed
+- Alias-based correction and all parakeet.cpp/GGUF runtime files and launch paths.
+
 ## [1.2.0] — 2026-07-20
 
 ### Added
@@ -38,5 +51,6 @@ Initial public release.
 - Bundled portable **ffmpeg** for non-WAV audio decode.
 - License / attribution notices under `licenses\` (shim MIT, parakeet.cpp MIT, GGUF CC-BY-4.0, FFmpeg LGPL when included).
 
+[1.3.0]: https://github.com/nan0bug00/SimpleParakeet/releases
 [1.2.0]: https://github.com/nan0bug00/SimpleParakeet/releases
 [1.1.0]: https://github.com/nan0bug00/SimpleParakeet/releases/tag/v1.1.0

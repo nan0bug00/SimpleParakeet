@@ -1,6 +1,5 @@
-# Assembles a shareable SimpleParakeet folder (does not zip by default).
-# Expects/copies the GGUF into models\. Builds API as bin\SimpleParakeet\ (onedir).
-# Does NOT start servers.
+# Prepares the local Sherpa ONNX runtime files used by the release workflow.
+# ASR models are downloaded and checksum-verified on first launch.
 
 param(
     [switch]$SkipBuild,
@@ -12,49 +11,28 @@ $Root = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
 $Bin = Join-Path $Root "bin"
 $Scripts = Join-Path $Root "scripts"
 $ApiExe = Join-Path $Bin "SimpleParakeet\SimpleParakeet.exe"
-$LocalPk = Join-Path $Root "..\parakeet\parakeet-server.exe"
-$LocalModel = Join-Path $Root "..\parakeet\tdt_ctc-110m-f16.gguf"
-$DestModel = Join-Path $Root "models\tdt_ctc-110m-f16.gguf"
+$Ffmpeg = Join-Path $Bin "ffmpeg.exe"
 
-New-Item -ItemType Directory -Force -Path $Bin, (Split-Path $DestModel) | Out-Null
-
-if (-not (Test-Path -LiteralPath (Join-Path $Bin "parakeet-server.exe"))) {
-    if (-not (Test-Path -LiteralPath $LocalPk)) {
-        throw "Need bin\parakeet-server.exe (copy from a parakeet.cpp Windows release)"
-    }
-    Copy-Item $LocalPk (Join-Path $Bin "parakeet-server.exe") -Force
-    Write-Host "Copied parakeet-server.exe"
-}
-
-if (-not (Test-Path -LiteralPath $DestModel)) {
-    if (-not (Test-Path -LiteralPath $LocalModel)) {
-        throw "Need models\tdt_ctc-110m-f16.gguf (copy from your parakeet install or LFS checkout)"
-    }
-    Copy-Item $LocalModel $DestModel -Force
-    Write-Host "Copied GGUF model into models\"
-}
-
-$apiSrc = Join-Path $Root "..\parakeet-api"
-if (Test-Path -LiteralPath (Join-Path $apiSrc "server.py")) {
-    Copy-Item (Join-Path $apiSrc "server.py") (Join-Path $Root "src\server.py") -Force
-    Copy-Item (Join-Path $apiSrc "audio.py") (Join-Path $Root "src\audio.py") -Force
-    Copy-Item (Join-Path $apiSrc "requirements.txt") (Join-Path $Root "src\requirements.txt") -Force
-    Write-Host "Synced src from parakeet-api"
-}
-
-if (-not $SkipBuild -and -not (Test-Path -LiteralPath $ApiExe)) {
-    Write-Host "Building SimpleParakeet onedir (PyInstaller)..."
+if (-not $SkipBuild) {
     & (Join-Path $Scripts "build_exe.ps1")
 }
-
-if (-not $SkipFfmpeg -and -not (Test-Path -LiteralPath (Join-Path $Bin "ffmpeg.exe"))) {
-    Write-Host "Fetching portable ffmpeg..."
-    & (Join-Path $Scripts "fetch_ffmpeg.ps1")
+if (-not (Test-Path -LiteralPath $ApiExe)) {
+    throw "Missing $ApiExe"
 }
 
-Write-Host ""
-Write-Host "Bundle staging ready at:" -ForegroundColor Green
-Write-Host "  $Root"
-Write-Host "API exe: $ApiExe"
-Write-Host "Zip that folder (exclude build\, .setup-complete, venv, logs) for release."
-Write-Host "End users double-click RUN-ME.bat"
+if (-not $SkipFfmpeg -and -not (Test-Path -LiteralPath $Ffmpeg)) {
+    & (Join-Path $Scripts "fetch_ffmpeg.ps1")
+}
+if (-not (Test-Path -LiteralPath $Ffmpeg)) {
+    throw "Missing $Ffmpeg"
+}
+
+foreach ($required in @("lexicon.json", "lexicon.example.json", "config.example.json")) {
+    $path = Join-Path $Root $required
+    if (-not (Test-Path -LiteralPath $path)) {
+        throw "Missing release file: $path"
+    }
+}
+
+Write-Host "Local Sherpa ONNX release inputs are ready." -ForegroundColor Green
+Write-Host "Use the GitHub Actions release workflow to produce the platform archives."

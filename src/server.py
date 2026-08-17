@@ -23,7 +23,12 @@ from fastapi.responses import JSONResponse, PlainTextResponse, Response, Streami
 from asr import ASRError, DEFAULT_ONNX_THREADS, MODEL_NAME, ParakeetRecognizer
 from audio import decode_to_wav16k_mono, wav16k_mono_to_float
 from lexicon import SkyrimLexicon
-from model_install import ensure_model
+from model_install import (
+    DEFAULT_MODEL_CHOICE,
+    default_model_directory,
+    ensure_model,
+    get_model_profile,
+)
 
 MODEL_ID = os.environ.get("PARAKEET_MODEL_ID", "whisper-1")
 HOST_MODEL_NAME = os.environ.get("PARAKEET_DISPLAY_NAME", MODEL_NAME)
@@ -39,23 +44,43 @@ def _root_relative(value: str) -> Path:
 
 @asynccontextmanager
 async def lifespan(application: FastAPI):
-    model_dir = _root_relative(os.environ.get("PARAKEET_MODEL_DIR") or "models/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8")
-    threads = int(os.environ.get("PARAKEET_ONNX_THREADS", DEFAULT_ONNX_THREADS))
+    configured_model_dir = os.environ.get("PARAKEET_MODEL_DIR")
+    selected_choice = os.environ.get("PARAKEET_MODEL_CHOICE")
+    if selected_choice:
+        profile = get_model_profile(selected_choice)
+        model_dir = (
+            _root_relative(configured_model_dir)
+            if configured_model_dir
+            else default_model_directory(_root_relative("."), profile)
+        )
+        model_type = profile.model_type
+        default_threads = profile.default_threads
+    elif configured_model_dir:
+        # An explicit ONNX directory bypasses automatic model download.
+        profile = None
+        model_dir = _root_relative(configured_model_dir)
+        model_type = os.environ.get("PARAKEET_MODEL_TYPE", "nemo_transducer")
+        default_threads = DEFAULT_ONNX_THREADS
+    else:
+        profile = get_model_profile(DEFAULT_MODEL_CHOICE)
+        model_dir = default_model_directory(_root_relative("."), profile)
+        model_type = profile.model_type
+        default_threads = profile.default_threads
+    threads = int(os.environ.get("PARAKEET_ONNX_THREADS", default_threads))
     lexicon_file = _root_relative(os.environ.get("PARAKEET_LEXICON_FILE", "lexicon.json"))
     try:
         enabled = os.environ.get("PARAKEET_LEXICON_ENABLED", "true").strip().lower() not in {"0", "false", "no", "off"}
         lexicon = SkyrimLexicon.load(
             lexicon_file,
-            threshold=float(os.environ.get("PARAKEET_LEXICON_THRESHOLD", "0.89")),
-            margin=float(os.environ.get("PARAKEET_LEXICON_MARGIN", "0.10")),
         ) if enabled else SkyrimLexicon()
     except ValueError as exc:
         LOG.warning("Lexicon disabled: %s", exc)
         lexicon = SkyrimLexicon()
-    recognizer = ParakeetRecognizer(model_dir, threads)
+    recognizer = ParakeetRecognizer(model_dir, threads, model_type=model_type)
     started = time.perf_counter()
     try:
-        ensure_model(model_dir)
+        if profile is not None:
+            ensure_model(profile, model_dir)
         recognizer.initialize()
     except ASRError as exc:
         # Fail startup with a useful error instead of accepting requests that all fail.
@@ -241,7 +266,7 @@ async def _handle_transcription(
         return PlainTextResponse(text)
 
     if response_format == "verbose_json":
-        # Ensure OpenAI-ish verbose shape even if upstream is minimal
+        # Ensure the OpenAI-compatible verbose response shape.
         if isinstance(payload, dict) and "segments" not in payload:
             duration = payload.get("duration")
             payload = {

@@ -1,5 +1,5 @@
 # Builds bin\SimpleParakeet\SimpleParakeet.exe with PyInstaller --onedir (no UPX).
-# Does NOT start servers. Does NOT download the GGUF.
+# Does not start the server or download an ASR model.
 
 param(
     [string]$Python = ""
@@ -14,7 +14,6 @@ $OutDir = Join-Path $Bin "SimpleParakeet"
 
 if (-not $Python) {
     $candidates = @(
-        (Join-Path $Root "..\parakeet-api\venv\Scripts\python.exe")
         (Join-Path $Root "venv\Scripts\python.exe")
         (Get-Command python -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source)
     )
@@ -32,13 +31,13 @@ Write-Host "Using $Python"
 
 New-Item -ItemType Directory -Force -Path $Bin, $Work | Out-Null
 
-# Remove previous onedir / legacy onefile output
+# Remove previous build output.
 if (Test-Path -LiteralPath $OutDir) {
     Remove-Item -LiteralPath $OutDir -Recurse -Force
 }
-$legacy = Join-Path $Bin "SimpleParakeet.exe"
-if (Test-Path -LiteralPath $legacy) {
-    Remove-Item -LiteralPath $legacy -Force
+$staleOneFile = Join-Path $Bin "SimpleParakeet.exe"
+if (Test-Path -LiteralPath $staleOneFile) {
+    Remove-Item -LiteralPath $staleOneFile -Force
 }
 
 $entry = Join-Path $Src "server.py"

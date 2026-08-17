@@ -55,6 +55,14 @@ function Save-Config($cfg) {
     $cfg | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $ConfigPath -Encoding UTF8
 }
 
+function Set-ConfigValue($cfg, [string]$Name, $Value) {
+    if ($null -eq $cfg.PSObject.Properties[$Name]) {
+        $cfg | Add-Member -NotePropertyName $Name -NotePropertyValue $Value
+    } else {
+        $cfg.$Name = $Value
+    }
+}
+
 function Ensure-FirstRun($cfg, [bool]$Force) {
     if ((Test-Path -LiteralPath $SetupFlag) -and -not $Force) {
         return $cfg
@@ -64,6 +72,25 @@ function Ensure-FirstRun($cfg, [bool]$Force) {
     Write-Host "SimpleParakeet setup"
     Write-Host "Press Enter to keep the value in [brackets]."
     Write-Host ""
+
+    $currentChoice = [string]$cfg.model_choice
+    $hasExplicitModel = [string]::IsNullOrWhiteSpace($currentChoice) -and
+        -not [string]::IsNullOrWhiteSpace([string]$cfg.model_dir
+        )
+    if (-not $hasExplicitModel) {
+        if ($currentChoice -ne "multilingual-600m") { $currentChoice = "english-110m" }
+        Write-Host "Choose the speech model before download:"
+        Write-Host "  1. English - Fast (110M), recommended"
+        Write-Host "  2. Multilingual (0.6B), slower"
+        $defaultNumber = if ($currentChoice -eq "multilingual-600m") { "2" } else { "1" }
+        while ($true) {
+            $modelIn = Read-Host ("Model [{0}]" -f $defaultNumber)
+            if ([string]::IsNullOrWhiteSpace($modelIn)) { $modelIn = $defaultNumber }
+            if ($modelIn.Trim() -eq "1") { $currentChoice = "english-110m"; break }
+            if ($modelIn.Trim() -eq "2") { $currentChoice = "multilingual-600m"; break }
+            Write-Host "Enter 1 or 2."
+        }
+    }
 
     $hostBind = [string]$cfg.host
     if ([string]::IsNullOrWhiteSpace($hostBind)) { $hostBind = "127.0.0.1" }
@@ -78,6 +105,9 @@ function Ensure-FirstRun($cfg, [bool]$Force) {
 
     $cfg.host = $hostBind
     $cfg.api_port = $apiPort
+    if (-not $hasExplicitModel) {
+        Set-ConfigValue $cfg "model_choice" $currentChoice
+    }
     Save-Config $cfg
     Set-Content -LiteralPath $SetupFlag -Value (Get-Date -Format o) -Encoding ASCII
 
@@ -85,22 +115,6 @@ function Ensure-FirstRun($cfg, [bool]$Force) {
     Write-Host "Saved settings to config.json"
     Write-Host ""
     return $cfg
-}
-
-function Resolve-ModelPath($cfg) {
-    $modelRel = [string]$cfg.model_dir
-    if ([string]::IsNullOrWhiteSpace($modelRel)) {
-        $modelRel = "models/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8"
-    }
-    $modelPath = if ([System.IO.Path]::IsPathRooted($modelRel)) {
-        $modelRel
-    } else {
-        Join-Path $Root ($modelRel -replace "/", [IO.Path]::DirectorySeparatorChar)
-    }
-    if (-not (Test-Path -LiteralPath $modelPath)) {
-        throw "Missing Parakeet v3 model directory: $modelPath. Install the model bundle before launching."
-    }
-    return $modelPath
 }
 
 function Assert-BundleFiles {
@@ -155,7 +169,7 @@ function Start-Hidden {
 }
 
 function Stop-Children {
-    # PyInstaller onefile spawns a child; kill the whole tree.
+    # Stop the API and any worker process it spawned.
     foreach ($childId in @($script:ChildPids)) {
         try {
             & taskkill.exe /F /T /PID $childId 2>$null | Out-Null
@@ -241,16 +255,27 @@ try {
     }
 
     $env:PARAKEET_ROOT = $Root
-    $env:PARAKEET_MODEL_DIR = [string]$cfg.model_dir
-    if ([string]::IsNullOrWhiteSpace($env:PARAKEET_MODEL_DIR)) { $env:PARAKEET_MODEL_DIR = "models/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8" }
+    $modelChoice = [string]$cfg.model_choice
+    $configuredModelDir = [string]$cfg.model_dir
+    if (-not [string]::IsNullOrWhiteSpace($modelChoice)) {
+        $env:PARAKEET_MODEL_CHOICE = $modelChoice
+        Remove-Item Env:PARAKEET_MODEL_DIR -ErrorAction SilentlyContinue
+        Remove-Item Env:PARAKEET_MODEL_TYPE -ErrorAction SilentlyContinue
+    } elseif (-not [string]::IsNullOrWhiteSpace($configuredModelDir)) {
+        Remove-Item Env:PARAKEET_MODEL_CHOICE -ErrorAction SilentlyContinue
+        $env:PARAKEET_MODEL_DIR = $configuredModelDir
+        $env:PARAKEET_MODEL_TYPE = if ([string]::IsNullOrWhiteSpace([string]$cfg.model_type)) { "nemo_transducer" } else { [string]$cfg.model_type }
+    } else {
+        Remove-Item Env:PARAKEET_MODEL_CHOICE -ErrorAction SilentlyContinue
+        Remove-Item Env:PARAKEET_MODEL_DIR -ErrorAction SilentlyContinue
+        Remove-Item Env:PARAKEET_MODEL_TYPE -ErrorAction SilentlyContinue
+    }
     $env:PARAKEET_ONNX_THREADS = "$onnxThreads"
     $env:PARAKEET_LEXICON_ENABLED = if ($cfg.lexicon_enabled -eq $false) { "false" } else { "true" }
     if ($env:PARAKEET_LEXICON_ENABLED -eq "true") {
         $lexiconFile = [string]$cfg.lexicon_file
         if ([string]::IsNullOrWhiteSpace($lexiconFile)) { $lexiconFile = "lexicon.json" }
         $env:PARAKEET_LEXICON_FILE = Join-Path $Root $lexiconFile
-        $env:PARAKEET_LEXICON_THRESHOLD = if ($null -eq $cfg.lexicon_threshold) { "0.89" } else { "$($cfg.lexicon_threshold)" }
-        $env:PARAKEET_LEXICON_MARGIN = if ($null -eq $cfg.lexicon_margin) { "0.10" } else { "$($cfg.lexicon_margin)" }
     }
     $env:PARAKEET_FFMPEG = $files.Ffmpeg
     $env:PATH = $BinDir + ";" + $oldPath
@@ -263,9 +288,13 @@ try {
             -OutLog (Join-Path $LogDir "api.out.log") `
             -ErrLog (Join-Path $LogDir "api.err.log")
     } else {
-        $py = Join-Path $Root "..\parakeet-api\venv\Scripts\python.exe"
+        $py = Join-Path $Root "venv\Scripts\python.exe"
         if (-not (Test-Path -LiteralPath $py)) {
-            throw "Missing bin\SimpleParakeet\SimpleParakeet.exe (API binary not built yet)."
+            $pythonCommand = Get-Command python -ErrorAction SilentlyContinue
+            if ($pythonCommand) { $py = $pythonCommand.Source }
+        }
+        if (-not $py -or -not (Test-Path -LiteralPath $py)) {
+            throw "Missing bin\SimpleParakeet\SimpleParakeet.exe and no local Python was found."
         }
         $srcDir = Join-Path $Root "src"
         $null = Start-Hidden `

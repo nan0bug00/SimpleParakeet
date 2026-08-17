@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
-# SimpleParakeet launcher (Linux native).
-# Defaults: API 8210, engine 8211 (override in config.json or with --setup / -Setup)
+# SimpleParakeet launcher (native Linux, in-process Sherpa ONNX backend).
 
 set -euo pipefail
 
@@ -12,12 +11,8 @@ EXAMPLE_PATH="$ROOT/config.example.json"
 BIN_DIR="$ROOT/bin"
 LOG_DIR="$ROOT/logs"
 SETUP_FLAG="$ROOT/.setup-complete"
-
 API_BIN="$BIN_DIR/SimpleParakeet/SimpleParakeet"
-PK_BIN="$BIN_DIR/parakeet-server"
 FFMPEG_BIN="$BIN_DIR/ffmpeg"
-
-PK_PID=""
 API_PID=""
 
 FORCE_SETUP=0
@@ -39,18 +34,12 @@ port_in_use() {
 }
 
 json_get() {
-  # json_get file key default — flat string/number keys only
-  local file="$1" key="$2" default="$3"
+  local file="$1" key="$2" default="$3" line
   [[ -f "$file" ]] || { echo "$default"; return; }
-  local line
   line="$(grep -E "\"${key}\"" "$file" 2>/dev/null | head -n 1 || true)"
-  if [[ -z "$line" ]]; then
-    echo "$default"
-    return
-  fi
   if [[ "$line" =~ :[[:space:]]*\"([^\"]*)\" ]]; then
     echo "${BASH_REMATCH[1]}"
-  elif [[ "$line" =~ :[[:space:]]*([0-9]+) ]]; then
+  elif [[ "$line" =~ :[[:space:]]*([0-9]+|true|false) ]]; then
     echo "${BASH_REMATCH[1]}"
   else
     echo "$default"
@@ -58,7 +47,7 @@ json_get() {
 }
 
 read_port_prompt() {
-  local label="$1" default="$2" raw n
+  local label="$1" default="$2" raw
   while true; do
     read -r -p "${label} [${default}]: " raw || raw=""
     if [[ -z "${raw// /}" ]]; then
@@ -74,128 +63,104 @@ read_port_prompt() {
 }
 
 write_config() {
-  local host="$1" api_port="$2" pk_port="$3" device="$4" model="$5"
-  cat >"$CONFIG_PATH" <<EOF
-{
-  "host": "${host}",
-  "api_port": ${api_port},
-  "parakeet_port": ${pk_port},
-  "device": "${device}",
-  "model": "${model}"
-}
-EOF
+  local host="$1" api_port="$2" model_choice="$3" model_dir="$4"
+  local model_type="$5" threads="$6" lexicon_enabled="$7" lexicon_file="$8"
+  {
+    echo '{'
+    printf '  "host": "%s",\n' "$host"
+    printf '  "api_port": %s,\n' "$api_port"
+    if [[ -n "$model_dir" && -z "$model_choice" ]]; then
+      printf '  "model_dir": "%s",\n' "$model_dir"
+      printf '  "model_type": "%s",\n' "$model_type"
+    else
+      printf '  "model_choice": "%s",\n' "$model_choice"
+    fi
+    printf '  "onnx_threads": %s,\n' "$threads"
+    printf '  "lexicon_enabled": %s,\n' "$lexicon_enabled"
+    printf '  "lexicon_file": "%s"\n' "$lexicon_file"
+    echo '}'
+  } >"$CONFIG_PATH"
 }
 
 ensure_config() {
   if [[ ! -f "$CONFIG_PATH" ]]; then
-    if [[ ! -f "$EXAMPLE_PATH" ]]; then
-      echo "Missing config.example.json" >&2
-      exit 1
-    fi
+    [[ -f "$EXAMPLE_PATH" ]] || { echo "Missing config.example.json" >&2; exit 1; }
     cp "$EXAMPLE_PATH" "$CONFIG_PATH"
   fi
 }
 
-ensure_first_run() {
-  if [[ -f "$SETUP_FLAG" && "$FORCE_SETUP" -eq 0 ]]; then
-    return
-  fi
-
-  # Without a TTY, `read` gets EOF and would silently accept defaults — refuse.
-  if [[ ! -t 0 ]]; then
+run_setup() {
+  [[ -t 0 ]] || {
     echo "Setup needs an interactive terminal." >&2
-    echo "Double-click RUN-ME.sh (opens a terminal), or run: ./RUN-ME.sh" >&2
+    echo "Double-click RUN-ME.sh, or run: ./RUN-ME.sh" >&2
     exit 1
-  fi
+  }
+
+  local host api_port model_choice model_dir model_type threads lexicon_enabled lexicon_file
+  host="$(json_get "$CONFIG_PATH" host 127.0.0.1)"
+  api_port="$(json_get "$CONFIG_PATH" api_port 8210)"
+  model_choice="$(json_get "$CONFIG_PATH" model_choice '')"
+  model_dir="$(json_get "$CONFIG_PATH" model_dir '')"
+  model_type="$(json_get "$CONFIG_PATH" model_type nemo_transducer)"
+  threads="$(json_get "$CONFIG_PATH" onnx_threads 4)"
+  lexicon_enabled="$(json_get "$CONFIG_PATH" lexicon_enabled true)"
+  lexicon_file="$(json_get "$CONFIG_PATH" lexicon_file lexicon.json)"
 
   echo
   echo "SimpleParakeet setup"
   echo "Press Enter to keep the value in [brackets]."
   echo
 
-  local host api_port pk_port device model
-  host="$(json_get "$CONFIG_PATH" host 127.0.0.1)"
-  api_port="$(json_get "$CONFIG_PATH" api_port 8210)"
-  pk_port="$(json_get "$CONFIG_PATH" parakeet_port 8211)"
-  device="$(json_get "$CONFIG_PATH" device cpu)"
-  model="$(json_get "$CONFIG_PATH" model models/tdt_ctc-110m-f16.gguf)"
-
-  local host_in
-  read -r -p "Listen address [${host}]: " host_in || host_in=""
-  if [[ -n "${host_in// /}" ]]; then
-    host="${host_in// /}"
+  if [[ -n "$model_choice" || -z "$model_dir" ]]; then
+    echo "Choose the speech model before download:"
+    echo "  1. English - Fast (110M), recommended"
+    echo "  2. Multilingual (0.6B), slower"
+    [[ "$model_choice" == "multilingual-600m" ]] && default_model=2 || default_model=1
+    while true; do
+      read -r -p "Model [${default_model}]: " model_in || model_in=""
+      [[ -z "${model_in// /}" ]] && model_in="$default_model"
+      if [[ "$model_in" == "1" ]]; then model_choice="english-110m"; break; fi
+      if [[ "$model_in" == "2" ]]; then model_choice="multilingual-600m"; break; fi
+      echo "Enter 1 or 2."
+    done
+    model_dir=""
   fi
 
+  read -r -p "Listen address [${host}]: " host_in || host_in=""
+  [[ -n "${host_in// /}" ]] && host="${host_in// /}"
   api_port="$(read_port_prompt "Whisper API port" "$api_port")"
   while port_in_use "$api_port"; do
     echo "Port ${api_port} is already in use."
     api_port="$(read_port_prompt "Whisper API port" "$api_port")"
   done
 
-  pk_port="$(read_port_prompt "Internal engine port" "$pk_port")"
-  while [[ "$pk_port" == "$api_port" ]] || port_in_use "$pk_port"; do
-    if [[ "$pk_port" == "$api_port" ]]; then
-      echo "Internal engine port must be different from the API port."
-    else
-      echo "Port ${pk_port} is already in use."
-    fi
-    pk_port="$(read_port_prompt "Internal engine port" "$pk_port")"
-  done
-
-  write_config "$host" "$api_port" "$pk_port" "$device" "$model"
+  write_config "$host" "$api_port" "$model_choice" "$model_dir" "$model_type" \
+    "$threads" "$lexicon_enabled" "$lexicon_file"
   date -Iseconds >"$SETUP_FLAG" 2>/dev/null || date >"$SETUP_FLAG"
-
   echo
   echo "Saved settings to config.json"
   echo
 }
 
-resolve_model_path() {
-  local model_rel="$1"
-  if [[ -z "$model_rel" ]]; then
-    model_rel="models/tdt_ctc-110m-f16.gguf"
-  fi
-  if [[ "$model_rel" = /* ]]; then
-    echo "$model_rel"
-  else
-    echo "$ROOT/$model_rel"
-  fi
-}
-
 cleanup() {
-  local pid
-  for pid in "$API_PID" "$PK_PID"; do
-    if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
-      kill -TERM "$pid" 2>/dev/null || true
-    fi
-  done
-  sleep 0.4
-  for pid in "$API_PID" "$PK_PID"; do
-    if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
-      kill -KILL "$pid" 2>/dev/null || true
-    fi
-  done
-  # Fallback if children reparented
+  if [[ -n "$API_PID" ]] && kill -0 "$API_PID" 2>/dev/null; then
+    kill -TERM "$API_PID" 2>/dev/null || true
+    sleep 0.4
+    kill -KILL "$API_PID" 2>/dev/null || true
+  fi
   pkill -f "$ROOT/bin/SimpleParakeet/SimpleParakeet" 2>/dev/null || true
-  pkill -f "$ROOT/bin/parakeet-server" 2>/dev/null || true
 }
 
 wait_api_ready() {
-  local host="$1" port="$2" timeout_sec="${3:-90}"
-  local url="http://${host}:${port}/health"
-  local deadline=$((SECONDS + timeout_sec))
+  local host="$1" port="$2" timeout_sec="${3:-300}"
+  local url="http://${host}:${port}/health" deadline=$((SECONDS + timeout_sec))
   echo "Starting... (waiting for http://${host}:${port})"
   while (( SECONDS < deadline )); do
     if command -v curl >/dev/null 2>&1; then
-      if curl -fsS --max-time 2 "$url" >/dev/null 2>&1; then
-        return 0
-      fi
+      curl -fsS --max-time 2 "$url" >/dev/null 2>&1 && return 0
     elif command -v wget >/dev/null 2>&1; then
-      if wget -q -T 2 -O /dev/null "$url" 2>/dev/null; then
-        return 0
-      fi
+      wget -q -T 2 -O /dev/null "$url" 2>/dev/null && return 0
     else
-      # No curl/wget: give processes a few seconds and hope
       sleep 3
       return 0
     fi
@@ -204,17 +169,8 @@ wait_api_ready() {
   return 1
 }
 
-show_log_tail() {
-  local path="$1" lines="${2:-20}"
-  if [[ -f "$path" ]]; then
-    echo "--- ${path} ---"
-    tail -n "$lines" "$path" 2>/dev/null || true
-  fi
-}
-
 show_endpoint() {
-  local host="$1" port="$2"
-  local endpoint="http://${host}:${port}/v1/audio/transcriptions"
+  local host="$1" port="$2" endpoint="http://${1}:${2}/v1/audio/transcriptions"
   echo
   echo "============================================================"
   echo " Ready. External Whisper endpoint:"
@@ -225,13 +181,6 @@ show_endpoint() {
   echo " API key: any non-empty value"
   echo "============================================================"
   echo
-  if command -v wl-copy >/dev/null 2>&1; then
-    printf '%s' "$endpoint" | wl-copy 2>/dev/null && echo "Copied to clipboard." || true
-  elif command -v xclip >/dev/null 2>&1; then
-    printf '%s' "$endpoint" | xclip -selection clipboard 2>/dev/null && echo "Copied to clipboard." || true
-  elif command -v xsel >/dev/null 2>&1; then
-    printf '%s' "$endpoint" | xsel --clipboard 2>/dev/null && echo "Copied to clipboard." || true
-  fi
 }
 
 trap cleanup EXIT INT TERM
@@ -240,144 +189,50 @@ echo
 echo "SimpleParakeet"
 echo
 
-# v2 uses a single in-process Sherpa ONNX API process. Keep the legacy branch
-# below only so an existing v1 config can still be opened and migrated safely.
-if [[ ! -f "$CONFIG_PATH" && -f "$EXAMPLE_PATH" ]]; then
-  cp "$EXAMPLE_PATH" "$CONFIG_PATH"
-fi
-if [[ -f "$CONFIG_PATH" ]] && grep -q '"model_dir"' "$CONFIG_PATH"; then
-  mkdir -p "$LOG_DIR"
-  if [[ "$FORCE_SETUP" -eq 1 ]]; then rm -f "$SETUP_FLAG"; fi
-  if [[ ! -f "$SETUP_FLAG" ]]; then
-    [[ -t 0 ]] || { echo "Setup needs an interactive terminal." >&2; exit 1; }
-    HOST="$(json_get "$CONFIG_PATH" host 127.0.0.1)"
-    API_PORT="$(json_get "$CONFIG_PATH" api_port 8210)"
-    read -r -p "Listen address [${HOST}]: " host_in || host_in=""
-    [[ -n "${host_in// /}" ]] && HOST="${host_in// /}"
-    API_PORT="$(read_port_prompt "Whisper API port" "$API_PORT")"
-    while port_in_use "$API_PORT"; do
-      echo "Port ${API_PORT} is already in use."
-      API_PORT="$(read_port_prompt "Whisper API port" "$API_PORT")"
-    done
-    # Preserve all v2 options while changing only onboarding values.
-    python3 - "$CONFIG_PATH" "$HOST" "$API_PORT" <<'PY'
-import json, sys
-path, host, port = sys.argv[1:]
-with open(path, encoding="utf-8") as f: cfg = json.load(f)
-cfg.update(host=host, api_port=int(port))
-with open(path, "w", encoding="utf-8") as f: json.dump(cfg, f, indent=2); f.write("\n")
-PY
-    date -Iseconds >"$SETUP_FLAG" 2>/dev/null || date >"$SETUP_FLAG"
-  fi
-  HOST="$(json_get "$CONFIG_PATH" host 127.0.0.1)"
-  API_PORT="$(json_get "$CONFIG_PATH" api_port 8210)"
-  MODEL_REL="$(json_get "$CONFIG_PATH" model_dir models/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8)"
-  ONNX_THREADS="$(json_get "$CONFIG_PATH" onnx_threads 4)"
-  if port_in_use "$API_PORT"; then echo "Port ${API_PORT} is already in use." >&2; exit 1; fi
-  [[ -f "$API_BIN" ]] || { echo "Missing bin/SimpleParakeet/SimpleParakeet" >&2; exit 1; }
-  export PARAKEET_ROOT="$ROOT" PARAKEET_MODEL_DIR="$MODEL_REL" PARAKEET_ONNX_THREADS="$ONNX_THREADS"
-  export PARAKEET_LEXICON_ENABLED="$(json_get "$CONFIG_PATH" lexicon_enabled true)"
-  export PARAKEET_LEXICON_FILE="$(json_get "$CONFIG_PATH" lexicon_file lexicon.json)"
-  export PARAKEET_LEXICON_THRESHOLD="$(json_get "$CONFIG_PATH" lexicon_threshold 0.89)"
-  export PARAKEET_LEXICON_MARGIN="$(json_get "$CONFIG_PATH" lexicon_margin 0.10)"
-  echo "Starting SimpleParakeet v2 (first launch downloads the verified model if needed)..."
-  (
-    cd "$BIN_DIR/SimpleParakeet"
-    exec "$API_BIN" --host "$HOST" --port "$API_PORT"
-  ) >"$LOG_DIR/api.out.log" 2>"$LOG_DIR/api.err.log" &
-  API_PID=$!
-  if ! wait_api_ready "$HOST" "$API_PORT" 300; then
-    show_log_tail "$LOG_DIR/api.err.log"
-    echo "API did not become ready." >&2; exit 1
-  fi
-  show_endpoint "$HOST" "$API_PORT"
-  echo "Keep this terminal open while using speech-to-text."
-  echo "Press Enter to stop."
-  read -r _ || true
-  exit 0
-fi
-
-if [[ "$FORCE_SETUP" -eq 1 ]]; then
-  rm -f "$SETUP_FLAG"
-fi
+ensure_config
+if [[ "$FORCE_SETUP" -eq 1 ]]; then rm -f "$SETUP_FLAG"; fi
+if [[ ! -f "$SETUP_FLAG" ]]; then run_setup; fi
 
 mkdir -p "$LOG_DIR"
-
-if [[ ! -x "$PK_BIN" && -f "$PK_BIN" ]]; then
-  chmod +x "$PK_BIN" || true
-fi
-if [[ ! -x "$API_BIN" && -f "$API_BIN" ]]; then
-  chmod +x "$API_BIN" || true
-fi
-if [[ -f "$FFMPEG_BIN" && ! -x "$FFMPEG_BIN" ]]; then
-  chmod +x "$FFMPEG_BIN" || true
-fi
-
-if [[ ! -f "$PK_BIN" ]]; then
-  echo "Missing bin/parakeet-server" >&2
-  exit 1
-fi
-if [[ ! -f "$API_BIN" ]]; then
-  echo "Missing bin/SimpleParakeet/SimpleParakeet" >&2
-  exit 1
-fi
-
-ensure_config
-ensure_first_run
+[[ -f "$API_BIN" ]] || { echo "Missing bin/SimpleParakeet/SimpleParakeet" >&2; exit 1; }
+[[ -x "$API_BIN" ]] || chmod +x "$API_BIN"
+if [[ -f "$FFMPEG_BIN" && ! -x "$FFMPEG_BIN" ]]; then chmod +x "$FFMPEG_BIN"; fi
 
 HOST="$(json_get "$CONFIG_PATH" host 127.0.0.1)"
 API_PORT="$(json_get "$CONFIG_PATH" api_port 8210)"
-PK_PORT="$(json_get "$CONFIG_PATH" parakeet_port 8211)"
-DEVICE="$(json_get "$CONFIG_PATH" device cpu)"
-MODEL_REL="$(json_get "$CONFIG_PATH" model models/tdt_ctc-110m-f16.gguf)"
-MODEL_PATH="$(resolve_model_path "$MODEL_REL")"
+MODEL_CHOICE="$(json_get "$CONFIG_PATH" model_choice '')"
+MODEL_DIR="$(json_get "$CONFIG_PATH" model_dir '')"
+MODEL_TYPE="$(json_get "$CONFIG_PATH" model_type nemo_transducer)"
+ONNX_THREADS="$(json_get "$CONFIG_PATH" onnx_threads 4)"
 
-if [[ ! -f "$MODEL_PATH" ]]; then
-  echo "Missing model file: $MODEL_PATH" >&2
+port_in_use "$API_PORT" && {
+  echo "Port ${API_PORT} is already in use. Close it or run: ./launch.sh --setup" >&2
   exit 1
-fi
+}
 
-if port_in_use "$API_PORT"; then
-  echo "Port ${API_PORT} is already in use. Close whatever is using it, or run: ./launch.sh --setup" >&2
-  exit 1
+[[ -f "$FFMPEG_BIN" ]] || echo "Note: bin/ffmpeg not found. WAV and PCM still work."
+export PARAKEET_ROOT="$ROOT" PARAKEET_ONNX_THREADS="$ONNX_THREADS"
+if [[ -n "$MODEL_CHOICE" ]]; then
+  export PARAKEET_MODEL_CHOICE="$MODEL_CHOICE"
+  unset PARAKEET_MODEL_DIR PARAKEET_MODEL_TYPE
+else
+  export PARAKEET_MODEL_DIR="$MODEL_DIR" PARAKEET_MODEL_TYPE="$MODEL_TYPE"
+  unset PARAKEET_MODEL_CHOICE
 fi
-if port_in_use "$PK_PORT"; then
-  echo "Port ${PK_PORT} is already in use. Close whatever is using it, or run: ./launch.sh --setup" >&2
-  exit 1
-fi
-
-if [[ ! -f "$FFMPEG_BIN" ]]; then
-  echo "Note: bin/ffmpeg not found. WAV and PCM still work."
-fi
-
-# Engine may ship sibling .so files in bin/
-export LD_LIBRARY_PATH="${BIN_DIR}${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-export PATH="${BIN_DIR}${PATH:+:$PATH}"
-export PARAKEET_DEVICE="$DEVICE"
-export PARAKEET_UPSTREAM="http://${HOST}:${PK_PORT}/v1/audio/transcriptions"
+export PARAKEET_LEXICON_ENABLED="$(json_get "$CONFIG_PATH" lexicon_enabled true)"
+export PARAKEET_LEXICON_FILE="$(json_get "$CONFIG_PATH" lexicon_file lexicon.json)"
 export PARAKEET_FFMPEG="$FFMPEG_BIN"
+export PATH="${BIN_DIR}${PATH:+:$PATH}"
 
-echo "Starting: $PK_BIN --model $MODEL_PATH --host $HOST --port $PK_PORT" >"$LOG_DIR/parakeet.out.log"
-: >"$LOG_DIR/parakeet.err.log"
-(
-  cd "$BIN_DIR"
-  exec "$PK_BIN" --model "$MODEL_PATH" --host "$HOST" --port "$PK_PORT"
-) >>"$LOG_DIR/parakeet.out.log" 2>>"$LOG_DIR/parakeet.err.log" &
-PK_PID=$!
-
-echo "Starting: $API_BIN --host $HOST --port $API_PORT" >"$LOG_DIR/api.out.log"
-: >"$LOG_DIR/api.err.log"
+echo "Starting SimpleParakeet (first launch downloads the verified selected model if needed)..."
 (
   cd "$BIN_DIR/SimpleParakeet"
   exec "$API_BIN" --host "$HOST" --port "$API_PORT"
-) >>"$LOG_DIR/api.out.log" 2>>"$LOG_DIR/api.err.log" &
+) >"$LOG_DIR/api.out.log" 2>"$LOG_DIR/api.err.log" &
 API_PID=$!
 
 if ! wait_api_ready "$HOST" "$API_PORT"; then
-  echo
-  echo "Startup failed. Log tails:"
-  show_log_tail "$LOG_DIR/parakeet.err.log"
-  show_log_tail "$LOG_DIR/api.err.log"
+  tail -n 20 "$LOG_DIR/api.err.log" 2>/dev/null || true
   echo "API did not become ready." >&2
   exit 1
 fi
